@@ -10,9 +10,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.utils.checkpoint as checkpoint
 import numpy as np
-from mmdet.utils import get_root_logger
 from timm.models import load_checkpoint
-from timm.models.layers import DropPath, to_2tuple, trunc_normal_
+from timm.layers import DropPath, to_2tuple, trunc_normal_
 
 class Mlp(nn.Module):
     """ Multilayer perceptron."""
@@ -97,7 +96,7 @@ class WindowAttention(nn.Module):
         # get pair-wise relative position index for each token inside the window
         coords_h = torch.arange(self.window_size[0])
         coords_w = torch.arange(self.window_size[1])
-        coords = torch.stack(torch.meshgrid([coords_h, coords_w]))  # 2, Wh, Ww
+        coords = torch.stack(torch.meshgrid([coords_h, coords_w], indexing='ij'))  # 2, Wh, Ww
         coords_flatten = torch.flatten(coords, 1)  # 2, Wh*Ww
         relative_coords = coords_flatten[:, :, None] - coords_flatten[:, None, :]  # 2, Wh*Ww, Wh*Ww
         relative_coords = relative_coords.permute(1, 2, 0).contiguous()  # Wh*Ww, Wh*Ww, 2
@@ -586,8 +585,7 @@ class SwinTransformer(nn.Module):
 
         if isinstance(pretrained, str):
             self.apply(_init_weights)
-            logger = get_root_logger()
-            load_checkpoint(self, pretrained, strict=False, logger=logger)
+            load_checkpoint(self, pretrained, strict=False)
         elif pretrained is None:
             self.apply(_init_weights)
         else:
@@ -626,14 +624,14 @@ class SwinTransformer(nn.Module):
 def SwinT(pretrained=True):
     model = SwinTransformer(embed_dim=96, depths=[2, 2, 6, 2], num_heads=[3, 6, 12, 24], window_size=7)
     if pretrained is True:
-        model.load_state_dict(torch.load('data/backbone_ckpt/swin_tiny_patch4_window7_224.pth', map_location='cpu')['model'], strict=False)
+        model.load_state_dict(torch.load('./swin_tiny_patch4_window7_224.pth', map_location='cpu')['model'], strict=False)
         
     return model
 
 def SwinS(pretrained=True):
     model = SwinTransformer(embed_dim=96, depths=[2, 2, 18, 2], num_heads=[3, 6, 12, 24], window_size=7)
     if pretrained is True:
-        model.load_state_dict(torch.load('data/backbone_ckpt/swin_small_patch4_window7_224.pth', map_location='cpu')['model'], strict=False)
+        model.load_state_dict(torch.load('./swin_small_patch4_window7_224.pth', map_location='cpu')['model'], strict=False)
         
     return model
 
@@ -647,7 +645,7 @@ def SwinB(pretrained=True):
 def SwinL(pretrained=True):
     model = SwinTransformer(embed_dim=192, depths=[2, 2, 18, 2], num_heads=[6, 12, 24, 48], window_size=12)
     if pretrained is True:
-        model.load_state_dict(torch.load('data/backbone_ckpt/swin_large_patch4_window12_384_22kto1k.pth', map_location='cpu')['model'], strict=False)
+        model.load_state_dict(torch.load('./swin_large_patch4_window12_384_22kto1k.pth', map_location='cpu')['model'], strict=False)
 
     return model
 

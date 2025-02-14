@@ -4,7 +4,7 @@ import torch
 import torch.nn.functional as F
 from einops import rearrange
 from torch import nn
-from .SwinTransformer import SwinB
+from SwinTransformer import SwinB
 
 
 def get_activation_fn(activation):

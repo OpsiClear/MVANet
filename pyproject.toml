@@ -1,3 +1,7 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
 [project]
 name = "mvanet"
 version = "0.1.0"
@@ -23,7 +27,11 @@ dependencies = [
     "matplotlib>=3.5.3",
     "scipy>=1.7.3",
     "tqdm>=4.65.2",
+    "build>=1.2.2.post1",
 ]
+
+[tool.hatch.build.targets.wheel]
+packages = ["MVANet.py", "SwinTransformer.py", "inference.py", "folder_monitor.py"]
 
 [tool.uv.sources]
 torch = [

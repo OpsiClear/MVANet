@@ -28,6 +28,8 @@ dependencies = [
     "scipy>=1.7.3",
     "tqdm>=4.65.2",
     "build>=1.2.2.post1",
+    "fastapi>=0.115.8",
+    "uvicorn>=0.34.0",
 ]
 
 [tool.hatch.build.targets.wheel]

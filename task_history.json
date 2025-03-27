@@ -1,0 +1,33 @@
+{
+  "358b9900-3c6c-4d81-bb8c-ecd400ab9e7b": {
+    "request_id": "358b9900-3c6c-4d81-bb8c-ecd400ab9e7b",
+    "input_folder": "\\\\129.22.141.143\\shared\\test\\scan_20241222_152643\\images",
+    "save_overlay": true,
+    "use_tta": true,
+    "device": "cuda:0",
+    "callback_url": null,
+    "status": "completed",
+    "created_at": "2025-02-28T15:01:45.083313",
+    "started_at": null,
+    "completed_at": "2025-02-28T15:17:11.787862",
+    "output_folders": [
+      "\\\\129.22.141.143\\shared\\test\\scan_20241222_152643\\images_mask",
+      "\\\\129.22.141.143\\shared\\test\\scan_20241222_152643\\images_overlay"
+    ],
+    "error_message": null
+  },
+  "1b6e43d3-62b9-42d6-9668-01f80f8b88ff": {
+    "request_id": "1b6e43d3-62b9-42d6-9668-01f80f8b88ff",
+    "input_folder": "\\\\OpsiClearNAS1\\Data\\diva360\\processed_data\\battery\\image",
+    "save_overlay": true,
+    "use_tta": true,
+    "device": "cuda:0",
+    "callback_url": null,
+    "status": "pending",
+    "created_at": "2025-03-27T12:18:25.180573",
+    "started_at": null,
+    "completed_at": null,
+    "output_folders": [],
+    "error_message": null
+  }
+}

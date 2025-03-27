@@ -7,7 +7,7 @@ import torch.nn.functional as F
 import ttach as tta
 from torch.amp import autocast
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Optional
+from typing import Optional, Callable
 import argparse
 import logging
 import time
@@ -15,6 +15,7 @@ import os
 from functools import lru_cache
 import threading
 import io
+import datetime
 
 # Configuration Constants
 MODEL_IMAGE_SIZE = (1024, 1024)
@@ -159,7 +160,7 @@ def save_image_files(
     mask: Image.Image,
     original_image: Optional[Image.Image],
     output_path: Path,
-    overlay_path: Optional[Path] = None,
+    overlay_path: Optional[Path] = None
 ):
     """Optimized image saving with buffered writes"""
 
@@ -251,7 +252,7 @@ def process_folder_recursive(
             save_overlay=save_overlay,
             use_tta=use_tta,
             output_folder=current_mask_folder,
-            overlay_folder=current_overlay_folder if save_overlay else None
+            overlay_folder=current_overlay_folder if save_overlay else None,
         )
 
     process_folder_internal(folder_path)
@@ -351,7 +352,7 @@ def process_folder(
                             mask,
                             original_image,
                             output_path,
-                            overlay_path,
+                            overlay_path
                         )
                     )
 

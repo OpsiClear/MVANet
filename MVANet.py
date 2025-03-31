@@ -92,10 +92,10 @@ class MCLM(nn.Module):
             nn.MultiheadAttention(d_model, num_heads, dropout=0.1)
         ])
 
-        self.linear1 = nn.Linear(d_model, d_model * 2)
-        self.linear2 = nn.Linear(d_model * 2, d_model)
         self.linear3 = nn.Linear(d_model, d_model * 2)
         self.linear4 = nn.Linear(d_model * 2, d_model)
+        self.linear5 = nn.Linear(d_model, d_model * 2)
+        self.linear6 = nn.Linear(d_model * 2, d_model)
         self.norm1 = nn.LayerNorm(d_model)
         self.norm2 = nn.LayerNorm(d_model)
         self.dropout = nn.Dropout(0.1)
@@ -136,7 +136,7 @@ class MCLM(nn.Module):
         g_hw_b_c = rearrange(g, 'b c h w -> (h w) b c')
         g_hw_b_c = g_hw_b_c + self.dropout1(self.attention[0](g_hw_b_c + self.g_pos, pools + self.p_poses, pools)[0])
         g_hw_b_c = self.norm1(g_hw_b_c)
-        g_hw_b_c = g_hw_b_c + self.dropout2(self.linear2(self.dropout(self.activation(self.linear1(g_hw_b_c)).clone())))
+        g_hw_b_c = g_hw_b_c + self.dropout2(self.linear6(self.dropout(self.activation(self.linear5(g_hw_b_c)).clone())))
         g_hw_b_c = self.norm2(g_hw_b_c)
 
         # attention between origin locs (q) & freashed glb (k,v)
@@ -167,11 +167,10 @@ class inf_MCLM(nn.Module):
             nn.MultiheadAttention(d_model, num_heads, dropout=0.1),
             nn.MultiheadAttention(d_model, num_heads, dropout=0.1)
         ])
-
-        self.linear1 = nn.Linear(d_model, d_model * 2)
-        self.linear2 = nn.Linear(d_model * 2, d_model)
         self.linear3 = nn.Linear(d_model, d_model * 2)
         self.linear4 = nn.Linear(d_model * 2, d_model)
+        self.linear5 = nn.Linear(d_model, d_model * 2)
+        self.linear6 = nn.Linear(d_model * 2, d_model)
         self.norm1 = nn.LayerNorm(d_model)
         self.norm2 = nn.LayerNorm(d_model)
         self.dropout = nn.Dropout(0.1)
@@ -212,7 +211,7 @@ class inf_MCLM(nn.Module):
         g_hw_b_c = rearrange(g, 'b c h w -> (h w) b c')
         g_hw_b_c = g_hw_b_c + self.dropout1(self.attention[0](g_hw_b_c + self.g_pos, pools + self.p_poses, pools)[0])
         g_hw_b_c = self.norm1(g_hw_b_c)
-        g_hw_b_c = g_hw_b_c + self.dropout2(self.linear2(self.dropout(self.activation(self.linear1(g_hw_b_c)).clone())))
+        g_hw_b_c = g_hw_b_c + self.dropout2(self.linear6(self.dropout(self.activation(self.linear5(g_hw_b_c)).clone())))
         g_hw_b_c = self.norm2(g_hw_b_c)
 
         # attention between origin locs (q) & freashed glb (k,v)
@@ -454,7 +453,7 @@ class MVANet(nn.Module):
 class inf_MVANet(nn.Module):  
     def __init__(self):
         super().__init__()
-        self.backbone = SwinB(pretrained=True)
+        self.backbone = SwinB(pretrained=False)
 
         emb_dim = 128
         self.output5 = make_cbr(1024, emb_dim)

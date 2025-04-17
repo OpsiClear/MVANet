@@ -16,18 +16,38 @@
     ],
     "error_message": null
   },
-  "1b6e43d3-62b9-42d6-9668-01f80f8b88ff": {
-    "request_id": "1b6e43d3-62b9-42d6-9668-01f80f8b88ff",
-    "input_folder": "\\\\OpsiClearNAS1\\Data\\diva360\\processed_data\\battery\\image",
+  "2f66b186-bb3b-43ea-aebb-a92390f22455": {
+    "request_id": "2f66b186-bb3b-43ea-aebb-a92390f22455",
+    "input_folder": "\\\\129.22.31.201\\shared\\Test_Run_03312025",
     "save_overlay": true,
     "use_tta": true,
     "device": "cuda:0",
     "callback_url": null,
-    "status": "pending",
-    "created_at": "2025-03-27T12:18:25.180573",
+    "status": "completed",
+    "created_at": "2025-03-31T17:23:30.185791",
     "started_at": null,
-    "completed_at": null,
-    "output_folders": [],
+    "completed_at": "2025-03-31T18:01:40.629215",
+    "output_folders": [
+      "\\\\129.22.31.201\\shared\\Test_Run_03312025_mask",
+      "\\\\129.22.31.201\\shared\\Test_Run_03312025_overlay"
+    ],
+    "error_message": null
+  },
+  "34e1d456-ab2e-4fe5-b633-c810f7440b96": {
+    "request_id": "34e1d456-ab2e-4fe5-b633-c810f7440b96",
+    "input_folder": "\\\\129.22.31.201\\shared\\Test_Run_03312025\\scan_20241222_150920",
+    "save_overlay": true,
+    "use_tta": true,
+    "device": "cuda:0",
+    "callback_url": null,
+    "status": "completed",
+    "created_at": "2025-04-01T12:16:10.173124",
+    "started_at": null,
+    "completed_at": "2025-04-01T12:21:31.009917",
+    "output_folders": [
+      "\\\\129.22.31.201\\shared\\Test_Run_03312025\\scan_20241222_150920_mask",
+      "\\\\129.22.31.201\\shared\\Test_Run_03312025\\scan_20241222_150920_overlay"
+    ],
     "error_message": null
   }
 }

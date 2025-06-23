@@ -241,19 +241,7 @@ async function showLatestImage() {
         
         addConsoleMessage(`Found latest image: ${imageData.image_name}`, 'success');
         
-        // Format the modified time
-        const modifiedDate = new Date(imageData.modified_time * 1000);
-        const timeStr = modifiedDate.toLocaleString();
         
-        // Get status badge
-        const getStatusBadge = (status) => {
-            switch(status) {
-                case 'processing': return '<span class="badge bg-warning">Processing</span>';
-                case 'completed': return '<span class="badge bg-success">Completed</span>';
-                case 'failed': return '<span class="badge bg-danger">Failed</span>';
-                default: return '<span class="badge bg-secondary">Unknown</span>';
-            }
-        };
         
         // Create image content
         const latestImageContent = document.getElementById('latestImageContent');
@@ -267,21 +255,10 @@ async function showLatestImage() {
                      onload="this.style.opacity='1'"
                      onerror="this.src='data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMjAwIiBoZWlnaHQ9IjIwMCIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48cmVjdCB3aWR0aD0iMjAwIiBoZWlnaHQ9IjIwMCIgZmlsbD0iI2Y4ZjlmYSIvPjx0ZXh0IHg9IjUwJSIgeT0iNTAlIiBmb250LWZhbWlseT0iQXJpYWwiIGZvbnQtc2l6ZT0iMTRweCIgZmlsbD0iIzY5NzY4OSIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZHk9Ii4zZW0iPkZhaWxlZCB0byBsb2FkPC90ZXh0Pjwvc3ZnPg=='"
                      style="opacity: 0; transition: opacity 0.3s;">
-                </div>
-            <div class="row text-start">
-                <div class="col-md-6">
-                    <strong>Image:</strong> ${imageData.image_name}<br>
-                    <strong>Task Status:</strong> ${getStatusBadge(imageData.task_status)}<br>
-                    <strong>Modified:</strong> ${timeStr}
-                </div>
-                <div class="col-md-6">
-                    <strong>Input:</strong> ${imageData.input_folder || 'Unknown'}<br>
-                    <strong>Output:</strong> ${imageData.output_folder}
-                </div>
             </div>
-            <div class="mt-3">
-                <small class="text-muted">Click image to view full size in new tab</small>
-        </div>
+            <div class="text-center">
+                <code>${imageData.output_folder}\\${imageData.image_name}</code>
+            </div>
         `;
         
         latestImageContent.innerHTML = imageHtml;

@@ -52,10 +52,6 @@ class MemoryLogHandler(logging.Handler):
 
         return logs
 
-    def clear_task_logs(self, task_id):
-        if task_id in self.current_task_logs:
-            del self.current_task_logs[task_id]
-
 
 # Create memory handler and configure logging
 memory_handler = MemoryLogHandler()
@@ -364,129 +360,16 @@ async def get_status(request_id: str) -> ProcessResponse:
     return tasks[request_id]
 
 
-@app.get("/api/images/{request_id}")
-async def get_task_images(request_id: str):
-    """Get all images from a task's output folder"""
-    if request_id not in tasks:
-        return JSONResponse(
-            status_code=404,
-            content={"detail": f"Task with request_id {request_id} not found"},
-        )
-
-    task = tasks[request_id]
-
-    if not task.output_folder:
-        return JSONResponse(
-            status_code=404,
-            content={"detail": "No output folder for this task"},
-        )
-
-    try:
-        output_folder = Path(task.output_folder)
-
-        # Get all image files
-        image_files = []
-        for ext in ["*.jpg", "*.jpeg", "*.png", "*.gif", "*.bmp"]:
-            image_files.extend(list(output_folder.glob(ext)))
-            image_files.extend(list(output_folder.glob(ext.upper())))
-            image_files.extend(list(output_folder.glob(f"**/{ext}")))
-            image_files.extend(list(output_folder.glob(f"**/{ext.upper()}")))
-
-            image_files.sort()
-
-        if not image_files:
-            return JSONResponse(
-                status_code=404,
-                content={"detail": "No images found in output folder"},
-            )
-
-        # Return list of image paths
-        return {
-            "total_images": len(image_files),
-            "images": [str(img.relative_to(output_folder)) for img in image_files],
-        }
-
-    except Exception as e:
-        logger.error(f"Error listing images: {str(e)}")
-        return JSONResponse(
-            status_code=500, content={"detail": f"Error listing images: {str(e)}"}
-        )
-
-
-@app.get("/api/images/{request_id}/{filename}")
-async def get_image_file(request_id: str, filename: str):
-    """Get a specific image file"""
-    if request_id not in tasks:
-        return JSONResponse(
-            status_code=404,
-            content={"detail": f"Task with request_id {request_id} not found"},
-        )
-
-    task = tasks[request_id]
-
-    if not task.output_folder:
-        return JSONResponse(
-            status_code=404,
-            content={"detail": "No output folder for this task"},
-        )
-
-    try:
-        output_folder = Path(task.output_folder)
-        image_path = output_folder / filename
-
-        # Security check - ensure the file is within the output folder
-        if not str(image_path.resolve()).startswith(str(output_folder.resolve())):
-            return JSONResponse(
-                status_code=403,
-                content={"detail": "Access denied"},
-            )
-
-        if not image_path.exists():
-            # Try to find the file recursively
-            for found_file in output_folder.rglob(filename):
-                image_path = found_file
-                break
-            else:
-                return JSONResponse(
-                    status_code=404,
-                    content={"detail": f"Image {filename} not found"},
-                )
-
-        return FileResponse(image_path)
-
-    except Exception as e:
-        logger.error(f"Error serving image: {str(e)}")
-        return JSONResponse(
-            status_code=500, content={"detail": f"Error serving image: {str(e)}"}
-        )
-
-
 @app.get("/api/latest-image")
 async def get_latest_processed_image():
     """Get the most recently saved processed image from any output folder"""
     try:
-        logger.info(f"Total tasks in memory: {len(tasks)}")
-
         # Find all tasks that have output folders (including currently processing ones)
         tasks_with_output = [
             (task_id, task) for task_id, task in tasks.items() if task.output_folder
         ]
 
-        logger.info(f"Tasks with output folders: {len(tasks_with_output)}")
-        for task_id, task in tasks_with_output:
-            logger.info(
-                f"Task {task_id}: status={task.status}, output_folder={task.output_folder}"
-            )
-
         if not tasks_with_output:
-            # Let's also check if there are any tasks at all, and what they look like
-            logger.info("No tasks with output folders found. All tasks:")
-            for task_id, task in tasks.items():
-                logger.info(
-                    f"Task {task_id}: status={task.status}, output_folder={getattr(task, 'output_folder', 'None')}"
-                )
-
-            # Since no tasks with output folders found, let's try current/recent processing folder
             # Check if there's a current processing task that might have images
             global current_input_folder
             if current_input_folder:
@@ -494,9 +377,6 @@ async def get_latest_processed_image():
                     input_path = Path(current_input_folder)
                     potential_output = input_path.parent / (
                         input_path.name + "_overlay"
-                    )
-                    logger.info(
-                        f"Checking current processing output folder: {potential_output}"
                     )
 
                     if potential_output.exists():
@@ -519,26 +399,23 @@ async def get_latest_processed_image():
                                 all_images, key=lambda f: f.stat().st_mtime
                             )
 
-                            # Create a temporary task entry for this image
-                            temp_task_id = "current_processing"
-
-                    return {
-                        "task_id": temp_task_id,
-                        "input_folder": current_input_folder,
-                        "output_folder": str(potential_output),
-                        "image_name": latest_image.name,
-                        "image_path": str(latest_image.relative_to(potential_output)),
-                        "image_url": f"/api/file/{temp_task_id}/{latest_image.name}",
-                        "modified_time": latest_image.stat().st_mtime,
-                        "task_status": "processing",
-                    }
+                            return {
+                                "task_id": "current_processing",
+                                "input_folder": current_input_folder,
+                                "output_folder": str(potential_output),
+                                "image_name": latest_image.name,
+                                "image_path": str(latest_image.relative_to(potential_output)),
+                                "image_url": f"/api/file/current_processing/{latest_image.name}",
+                                "modified_time": latest_image.stat().st_mtime,
+                                "task_status": "processing",
+                            }
 
                 except Exception as e:
                     logger.error(f"Error checking current processing folder: {e}")
 
             return JSONResponse(
                 status_code=404,
-                content={"detail": "No tasks with output folders found"},
+                content={"detail": "No processed images found"},
             )
 
         # Find all image files from all output folders
@@ -596,6 +473,54 @@ async def get_latest_processed_image():
         logger.error(f"Error getting latest image: {str(e)}")
         return JSONResponse(
             status_code=500, content={"detail": f"Error getting latest image: {str(e)}"}
+        )
+
+
+@app.get("/api/images/{request_id}/{filename}")
+async def get_image_file(request_id: str, filename: str):
+    """Get a specific image file"""
+    if request_id not in tasks:
+        return JSONResponse(
+            status_code=404,
+            content={"detail": f"Task with request_id {request_id} not found"},
+        )
+
+    task = tasks[request_id]
+
+    if not task.output_folder:
+        return JSONResponse(
+            status_code=404,
+            content={"detail": "No output folder for this task"},
+        )
+
+    try:
+        output_folder = Path(task.output_folder)
+        image_path = output_folder / filename
+
+        # Security check - ensure the file is within the output folder
+        if not str(image_path.resolve()).startswith(str(output_folder.resolve())):
+            return JSONResponse(
+                status_code=403,
+                content={"detail": "Access denied"},
+            )
+
+        if not image_path.exists():
+            # Try to find the file recursively
+            for found_file in output_folder.rglob(filename):
+                image_path = found_file
+                break
+            else:
+                return JSONResponse(
+                    status_code=404,
+                    content={"detail": f"Image {filename} not found"},
+                )
+
+        return FileResponse(image_path)
+
+    except Exception as e:
+        logger.error(f"Error serving image: {str(e)}")
+        return JSONResponse(
+            status_code=500, content={"detail": f"Error serving image: {str(e)}"}
         )
 
 

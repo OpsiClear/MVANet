@@ -194,20 +194,6 @@ def background_process_task(request_id: str, input_folder_str: str, use_tta: boo
             request_id,
         )
 
-        # Hook into the processing function to capture progress
-        original_logger = logging.getLogger("src.inference")
-
-        class TaskLoggerAdapter(logging.LoggerAdapter):
-            def process(self, msg, kwargs):
-                # Add task_id to all log records
-                record = kwargs.get("extra", {})
-                record["task_id"] = request_id
-                kwargs["extra"] = record
-                return msg, kwargs
-
-        # Replace the inference logger temporarily
-        task_logger = TaskLoggerAdapter(original_logger, {"task_id": request_id})
-
         # Patch the logging in inference module
         import src.inference as inference_module
 
@@ -404,7 +390,9 @@ async def get_latest_processed_image():
                                 "input_folder": current_input_folder,
                                 "output_folder": str(potential_output),
                                 "image_name": latest_image.name,
-                                "image_path": str(latest_image.relative_to(potential_output)),
+                                "image_path": str(
+                                    latest_image.relative_to(potential_output)
+                                ),
                                 "image_url": f"/api/file/current_processing/{latest_image.name}",
                                 "modified_time": latest_image.stat().st_mtime,
                                 "task_status": "processing",

@@ -239,30 +239,26 @@ body {
     height: 100%;
     background: rgba(0, 0, 0, 0.5);
     display: none;
-}
-
-.modal.show {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-}
-
-.modal.fade {
     opacity: 0;
     transition: opacity 0.15s linear;
 }
 
-.modal.fade.show {
+.modal.fade.show,
+.modal.show {
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
     opacity: 1;
 }
 
 .modal-dialog {
     max-width: 500px;
     width: 90%;
-    margin: 20px;
+    margin: 20px auto;
+    position: relative;
 }
 
-.modal-lg {
+.modal-dialog.modal-lg {
     max-width: 800px;
 }
 
@@ -349,6 +345,18 @@ body {
 .fw-bold { font-weight: 700; }
 
 .text-muted { color: #6c757d !important; }
+.text-danger { color: #dc3545 !important; }
+.visually-hidden { 
+    position: absolute !important;
+    width: 1px !important;
+    height: 1px !important;
+    padding: 0 !important;
+    margin: -1px !important;
+    overflow: hidden !important;
+    clip: rect(0, 0, 0, 0) !important;
+    white-space: nowrap !important;
+    border: 0 !important;
+}
 
 /* Bootstrap icons */
 .bi {

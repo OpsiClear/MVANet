@@ -226,8 +226,26 @@ function updateUIForProcessing(processing) {
 
 // Show latest processed image
 async function showLatestImage() {
+    // Check if we're refreshing an already open modal
+    const isRefreshing = latestImageModal && document.getElementById('latestImageModal').classList.contains('show');
+    
     try {
-        addConsoleMessage('Loading latest processed image...', 'info');
+        if (!isRefreshing) {
+            addConsoleMessage('Loading latest processed image...', 'info');
+        }
+        
+        // Show loading state in modal if it's already open
+        if (isRefreshing) {
+            const latestImageContent = document.getElementById('latestImageContent');
+            latestImageContent.innerHTML = `
+                <div class="text-center">
+                    <div class="spinner-border mb-3" role="status">
+                        <span class="visually-hidden">Loading...</span>
+                    </div>
+                    <p>Refreshing latest image...</p>
+                </div>
+            `;
+        }
         
         const response = await fetch(`${API_BASE_URL}/latest-image`);
         if (!response.ok) {
@@ -239,7 +257,9 @@ async function showLatestImage() {
         
         const imageData = await response.json();
         
-        addConsoleMessage(`Found latest image: ${imageData.image_name}`, 'success');
+        if (!isRefreshing) {
+            addConsoleMessage(`Found latest image: ${imageData.image_name}`, 'success');
+        }
         
         
         
@@ -262,10 +282,30 @@ async function showLatestImage() {
         `;
         
         latestImageContent.innerHTML = imageHtml;
-        latestImageModal.show();
+        
+        // Show modal only if not already open
+        if (!isRefreshing) {
+            latestImageModal.show();
+        }
         
     } catch (error) {
-        addConsoleMessage(`Error loading latest image: ${error.message}`, 'error');
+        if (!isRefreshing) {
+            addConsoleMessage(`Error loading latest image: ${error.message}`, 'error');
+        } else {
+            // Show error in modal if refreshing
+            const latestImageContent = document.getElementById('latestImageContent');
+            latestImageContent.innerHTML = `
+                <div class="text-center">
+                    <div class="text-danger mb-3">
+                        <i class="bi bi-exclamation-triangle" style="font-size: 2rem;"></i>
+                    </div>
+                    <p class="text-danger">Error: ${error.message}</p>
+                    <button class="btn btn-outline-primary" onclick="showLatestImage()">
+                        <i class="bi bi-arrow-clockwise me-1"></i>Try Again
+                    </button>
+                </div>
+            `;
+        }
         console.error('Error loading latest image:', error);
     }
 }
@@ -283,6 +323,9 @@ document.addEventListener('DOMContentLoaded', async function() {
     
     // Handle show latest image button
     document.getElementById('showLatestImage').addEventListener('click', showLatestImage);
+    
+    // Handle refresh latest image button
+    document.getElementById('refreshLatestImage').addEventListener('click', showLatestImage);
     
     addConsoleMessage('Application initialized', 'info');
     

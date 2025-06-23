@@ -14,8 +14,10 @@ import os
 from functools import lru_cache
 import threading
 import io
+from .MVANet import inf_MVANet
 
 # Configuration Constants
+MODEL_PATH = Path(__file__).parent.parent / "models" / "MVANet.pth"
 MODEL_IMAGE_SIZE = (1024, 1024)
 NUM_WORKERS = min(8, os.cpu_count() or 1)  # Optimize thread count
 SUPPORTED_FORMATS = {".jpg", ".jpeg", ".png", ".bmp"}
@@ -45,6 +47,7 @@ def setup_tta_transforms():
     return tta.Compose(
         [
             tta.HorizontalFlip(),
+            tta.VerticalFlip(),
         ]
     )
 
@@ -73,11 +76,73 @@ def rgb_loader_refiner(
 
 
 # Model Related Functions
-def load_model(model_path: Path, device: torch.device) -> torch.nn.Module:
-    """Loads and prepares the model for inference"""
-    model: torch.nn.Module = torch.load(
-        model_path, weights_only=False, map_location=device
-    )
+def load_model(
+    device: torch.device, model_path: Path | None = None
+) -> torch.nn.Module:
+    """Loads and prepares the model for inference
+
+    :param device: Device to load the model on
+    :param model_path: Optional path to the model weights file (uses default if None)
+    :return: Loaded model ready for inference
+    """
+    if model_path is None:
+        model_path = MODEL_PATH
+
+    # Initialize the inference model architecture
+    try:
+        model = inf_MVANet()
+    except FileNotFoundError as e:
+        if "swin_base_patch4_window12_384_22kto1k.pth" in str(e):
+            # Handle missing Swin pretrained weights - they're included in the complete checkpoint
+            logging.warning(
+                "Swin pretrained weights file not found locally. Using weights from complete checkpoint."
+            )
+            # Temporarily patch the SwinB function to skip pretrained loading
+            from . import SwinTransformer as swin_module
+
+            original_swinb = swin_module.SwinB
+
+            def patched_swinb(pretrained=True):
+                from .SwinTransformer import SwinTransformer
+
+                model = SwinTransformer(
+                    embed_dim=128,
+                    depths=[2, 2, 18, 2],
+                    num_heads=[4, 8, 16, 32],
+                    window_size=12,
+                )
+                # Skip pretrained loading - weights will come from complete checkpoint
+                return model
+
+            # Temporarily replace SwinB
+            swin_module.SwinB = patched_swinb
+            try:
+                model = inf_MVANet()
+            finally:
+                # Restore original SwinB
+                swin_module.SwinB = original_swinb
+        else:
+            raise e
+
+    # Load the state dict from the saved model
+    checkpoint = torch.load(model_path, weights_only=False, map_location=device)
+
+    # Handle different checkpoint formats
+    if isinstance(checkpoint, dict) and "state_dict" in checkpoint:
+        state_dict = checkpoint["state_dict"]
+    elif isinstance(checkpoint, dict) and "model" in checkpoint:
+        state_dict = checkpoint["model"]
+    elif hasattr(checkpoint, "state_dict"):
+        state_dict = checkpoint.state_dict()
+    else:
+        # Assume checkpoint is the model itself or state_dict
+        if hasattr(checkpoint, "load_state_dict"):
+            return checkpoint.to(device).eval()
+        else:
+            state_dict = checkpoint
+
+    # Load weights into the model
+    model.load_state_dict(state_dict, strict=False)
     model = model.to(device)
     model.eval()
     return model
@@ -116,9 +181,7 @@ def preprocess_image(
                 MODEL_IMAGE_SIZE, resample=Image.Resampling.BILINEAR
             )
             # Use thread-local transform
-            img_tensor: torch.Tensor = get_thread_transform()(resized_image).unsqueeze(
-                0
-            )
+            img_tensor = get_thread_transform()(resized_image).unsqueeze(0)
 
             # Batch transfer to GPU
             return img_tensor.to(device, non_blocking=True), original_size
@@ -156,32 +219,15 @@ def create_overlay(original_image: Image.Image, mask: Image.Image) -> Image.Imag
 # File Operations
 def save_image_files(
     mask: Image.Image,
-    original_image: Image.Image | None,
-    output_path: Path,
-    overlay_path: Path | None = None,
+    original_image: Image.Image,
+    overlay_path: Path,
 ):
-    """Optimized image saving with buffered writes"""
-
-    def save_mask():
-        buffer = io.BytesIO()
-        mask.save(buffer, format="PNG", optimize=True)
-        with open(str(output_path), "wb") as f:
-            f.write(buffer.getvalue())
-
-    def save_overlay():
-        if overlay_path and original_image:
-            overlay = create_overlay(original_image, mask)
-            buffer = io.BytesIO()
-            overlay.save(buffer, format="PNG", optimize=True)
-            with open(str(overlay_path), "wb") as f:
-                f.write(buffer.getvalue())
-
-    with ThreadPoolExecutor(max_workers=2) as executor:
-        futures = [executor.submit(save_mask)]
-        if overlay_path and original_image:
-            futures.append(executor.submit(save_overlay))
-        for future in futures:
-            future.result()
+    """Save overlay image with buffered writes"""
+    overlay = create_overlay(original_image, mask)
+    buffer = io.BytesIO()
+    overlay.save(buffer, format="PNG", optimize=True)
+    with open(str(overlay_path), "wb") as f:
+        f.write(buffer.getvalue())
 
 
 # Main Processing Functions
@@ -211,17 +257,12 @@ def process_folder_recursive(
     folder_path: Path,
     model: torch.nn.Module,
     device: torch.device,
-    save_overlay: bool = False,
     use_tta: bool = True,
 ):
     """Process all images in folder and its subfolders recursively"""
-    # Create mask output folder at parent level
-    mask_output_folder = folder_path.parent / (folder_path.name + "_mask")
-    mask_output_folder.mkdir(exist_ok=True)
-
-    if save_overlay:
-        overlay_output_folder = folder_path.parent / (folder_path.name + "_overlay")
-        overlay_output_folder.mkdir(exist_ok=True)
+    # Create overlay output folder at parent level
+    overlay_output_folder = folder_path.parent / (folder_path.name + "_overlay")
+    overlay_output_folder.mkdir(exist_ok=True)
 
     def process_folder_internal(current_folder: Path, relative_path: Path = Path()):
         # Get all subfolders
@@ -234,23 +275,17 @@ def process_folder_recursive(
                 process_folder_internal(subfolder, new_relative_path)
 
         # Process current folder's images
-        # Create corresponding subfolder in mask output directory
-        current_mask_folder = mask_output_folder / relative_path
-        current_mask_folder.mkdir(exist_ok=True, parents=True)
+        # Create corresponding subfolder in overlay output directory
+        current_overlay_folder = overlay_output_folder / relative_path
+        current_overlay_folder.mkdir(exist_ok=True, parents=True)
 
-        if save_overlay:
-            current_overlay_folder = overlay_output_folder / relative_path
-            current_overlay_folder.mkdir(exist_ok=True, parents=True)
-
-        # Modified process_folder call with new output locations
+        # Process folder with overlay output location
         process_folder(
             current_folder,
             model,
             device,
-            save_overlay=save_overlay,
             use_tta=use_tta,
-            output_folder=current_mask_folder,
-            overlay_folder=current_overlay_folder if save_overlay else None,
+            overlay_folder=current_overlay_folder,
         )
 
     process_folder_internal(folder_path)
@@ -260,9 +295,7 @@ def process_folder(
     folder_path: Path,
     model: torch.nn.Module,
     device: torch.device,
-    save_overlay: bool = False,
     use_tta: bool = True,
-    output_folder: Path | None = None,
     overlay_folder: Path | None = None,
 ):
     """Process images with optimized CPU and I/O operations"""
@@ -284,14 +317,10 @@ def process_folder(
 
     logging.info(f"Found {len(image_files)} images to process")
 
-    # Use provided output folders or create default ones
-    if output_folder is None:
-        output_folder = folder_path.parent / (folder_path.name + "_mask")
-    output_folder.mkdir(exist_ok=True)
-
-    if save_overlay and overlay_folder is None:
+    # Use provided overlay folder or create default one
+    if overlay_folder is None:
         overlay_folder = folder_path.parent / (folder_path.name + "_overlay")
-        overlay_folder.mkdir(exist_ok=True)
+    overlay_folder.mkdir(exist_ok=True)
 
     # Pre-compile TTA transforms
     if use_tta:
@@ -333,15 +362,11 @@ def process_folder(
 
                     # CPU Processing
                     mask = postprocess_mask(mask_tensor.float(), original_size)
-                    output_path = output_folder / (img_path.stem + ".png")
-
-                    if save_overlay:
-                        with Image.open(img_path) as original_image:
-                            original_image = original_image.convert("RGB")
-                            overlay_path = overlay_folder / (img_path.stem + ".png")
-                    else:
-                        original_image = None
-                        overlay_path = None
+                    
+                    # Load original image for overlay
+                    with Image.open(img_path) as original_image:
+                        original_image = original_image.convert("RGB")
+                        overlay_path = overlay_folder / (img_path.stem + ".png")
 
                     # Submit save task
                     save_futures.append(
@@ -349,9 +374,9 @@ def process_folder(
                             save_image_files,
                             mask,
                             original_image,
-                            output_path,
                             overlay_path,
                         )
+
                     )
 
                     img_process_time = time.time() - img_start_time
@@ -386,21 +411,10 @@ def parse_args():
     """Parse command line arguments"""
     parser = argparse.ArgumentParser(description="Image segmentation inference script")
     parser.add_argument(
-        "--model_path",
-        type=Path,
-        default="Mvanet_complete.pth",
-        help="Path to the model weights file (default: Mvanet_complete.pth)",
-    )
-    parser.add_argument(
         "--input_folder",
         type=Path,
         required=True,
         help="Path to folder containing input images",
-    )
-    parser.add_argument(
-        "--save_overlay",
-        action="store_true",
-        help="Save overlay of mask on original image",
     )
     parser.add_argument(
         "--use_tta", action="store_true", help="Use test-time augmentation"
@@ -418,6 +432,7 @@ def parse_args():
         choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
         help="Set the logging level (default: INFO)",
     )
+
     return parser.parse_args()
 
 
@@ -436,16 +451,15 @@ if __name__ == "__main__":
         format="%(asctime)s - %(levelname)s - %(message)s",
     )
 
-    logging.info(f"Loading model from {args.model_path}")
-    model = load_model(args.model_path, device)
-    logging.info(f"Model loaded successfully on {device}")
+    logging.info(f"Loading model from {MODEL_PATH}")
+    model = load_model(device)
+    logging.info(f"Model (inf_MVANet) loaded successfully on {device}")
 
-    # Use the new recursive processing function
+    # Use the recursive processing function (always saves overlays)
     process_folder_recursive(
         args.input_folder,
         model,
         device,
-        save_overlay=args.save_overlay,
         use_tta=args.use_tta,
     )
 

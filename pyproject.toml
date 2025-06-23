@@ -30,6 +30,7 @@ dependencies = [
     "build>=1.2.2.post1",
     "fastapi>=0.115.8",
     "uvicorn>=0.34.0",
+    "ray>=2.47.1",
 ]
 
 [tool.hatch.build.targets.wheel]

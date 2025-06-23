@@ -4,9 +4,8 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Image Segmentation Dashboard</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono&display=swap" rel="stylesheet">
+
+
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css">
     <link rel="stylesheet" href="static/style.css">
@@ -22,7 +21,7 @@
     <div class="container">
         <!-- Submit Job Form -->
         <div class="card mb-4">
-            <div class="card-header bg-white d-flex justify-content-between align-items-center py-3">
+            <div class="card-header d-flex justify-content-between align-items-center">
                 <h5 class="mb-0">New Job</h5>
             </div>
             <div class="card-body">
@@ -32,18 +31,10 @@
                         <input type="text" class="form-control" id="inputFolder" placeholder="\\server\share\folder" required>
                         <div class="form-text">Enter the full path to the folder containing images</div>
                     </div>
-                    <div class="row mb-3">
-                        <div class="col-md-6">
-                            <div class="form-check">
-                                <input class="form-check-input" type="checkbox" id="saveOverlay" checked>
-                                <label class="form-check-label" for="saveOverlay">Save Overlay</label>
-                            </div>
-                        </div>
-                        <div class="col-md-6">
-                            <div class="form-check">
-                                <input class="form-check-input" type="checkbox" id="useTta" checked>
-                                <label class="form-check-label" for="useTta">Use Test-Time Augmentation</label>
-                            </div>
+                    <div class="mb-3">
+                        <div class="form-check">
+                            <input class="form-check-input" type="checkbox" id="useTta" checked>
+                            <label class="form-check-label" for="useTta">Use Test-Time Augmentation</label>
                         </div>
                     </div>
                     <button type="submit" class="btn btn-primary">Submit Job</button>
@@ -51,184 +42,50 @@
             </div>
         </div>
         
-        <!-- Status Overview -->
-        <div class="row mb-4">
-            <!-- Queue Status -->
-            <div class="col-md-6">
-                <div class="card h-100">
-                    <div class="card-header bg-white py-3">
-                        <h5 class="mb-0">Queue Status</h5>
-                    </div>
-                    <div class="card-body text-center py-4">
-                        <p class="mb-2 text-muted">Jobs in Queue</p>
-                        <div id="queueCount">-</div>
-                        <p class="text-muted mt-3 mb-0">Last updated: <span id="lastUpdated">-</span></p>
-                    </div>
-                </div>
-            </div>
-            
-            <!-- Status Summary -->
-            <div class="col-md-6">
-                <div class="card h-100">
-                    <div class="card-header bg-white py-3">
-                        <h5 class="mb-0">Status Summary</h5>
-                    </div>
-                    <div class="card-body">
-                        <div class="row text-center">
-                            <div class="col-3">
-                                <div class="status-badge status-pending"></div>
-                                <div class="status-count" id="pendingCount">0</div>
-                                <div>Pending</div>
-                            </div>
-                            <div class="col-3">
-                                <div class="status-badge status-processing"></div>
-                                <div class="status-count" id="processingCount">0</div>
-                                <div>Processing</div>
-                            </div>
-                            <div class="col-3">
-                                <div class="status-badge status-completed"></div>
-                                <div class="status-count" id="completedCount">0</div>
-                                <div>Completed</div>
-                            </div>
-                            <div class="col-3">
-                                <div class="status-badge status-failed"></div>
-                                <div class="status-count" id="failedCount">0</div>
-                                <div>Failed</div>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </div>
-        
-        <!-- Device Info -->
+        <!-- Console Output -->
         <div class="card mb-4">
-            <div class="card-header bg-white py-3">
-                <h5 class="mb-0">Device Information</h5>
-            </div>
-            <div class="card-body" id="deviceInfoContainer">
-                <div class="text-center">
-                    <div class="spinner-border text-primary" role="status">
-                        <span class="visually-hidden">Loading...</span>
-                    </div>
-                </div>
-            </div>
-        </div>
-        
-        <!-- Tasks List -->
-        <div class="card mb-4">
-            <div class="card-header bg-white d-flex justify-content-between align-items-center py-3">
-                <h5 class="mb-0">Processing Tasks</h5>
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <h5 class="mb-0"><i class="bi bi-terminal me-2"></i>Console Output</h5>
                 <div>
-                    <button id="clearTasks" class="btn btn-sm btn-outline-danger me-2">
-                        <i class="bi bi-trash me-1"></i>Clear History
+                    <button id="showLatestImage" class="btn btn-sm btn-outline-primary me-2">
+                        <i class="bi bi-image me-1"></i>Latest Image
                     </button>
-                    <button id="refreshTasks" class="btn btn-sm btn-outline-secondary">
-                        <i class="bi bi-arrow-clockwise me-1"></i>Refresh
-                    </button>
-                </div>
-            </div>
-            <div class="card-body">
-                <div id="taskList">
-                    <p class="text-center text-muted py-4">No tasks found</p>
-                </div>
-            </div>
-        </div>
-
-        <!-- Logs Section -->
-        <div class="card mb-4">
-            <div class="card-header bg-white d-flex justify-content-between align-items-center py-3">
-                <h5 class="mb-0">System Logs</h5>
-                <div>
-                    <div class="btn-group me-2" role="group">
-                        <button id="logAllLevel" class="btn btn-sm btn-outline-secondary log-filter-btn active">All</button>
-                        <button id="logInfoLevel" class="btn btn-sm btn-outline-info log-filter-btn">Info</button>
-                        <button id="logErrorLevel" class="btn btn-sm btn-outline-danger log-filter-btn">Error</button>
-                        <button id="logWarningLevel" class="btn btn-sm btn-outline-warning log-filter-btn">Warning</button>
-                    </div>
-                    <button id="refreshLogs" class="btn btn-sm btn-outline-secondary me-2">
-                        <i class="bi bi-arrow-clockwise"></i>
-                    </button>
-                    <button id="clearLogs" class="btn btn-sm btn-outline-secondary">
-                        <i class="bi bi-trash"></i>
+                    <button id="clearConsole" class="btn btn-sm btn-outline-secondary">
+                        <i class="bi bi-trash me-1"></i>Clear
                     </button>
                 </div>
             </div>
             <div class="card-body p-0">
-                <div id="logContainer" class="m-0">
-                    <p class="text-center text-muted py-4">Loading logs...</p>
+                <div id="consoleOutput" class="console-output">
+                    <div class="console-line text-muted">Ready to process images...</div>
                 </div>
             </div>
         </div>
+
+
     </div>
 
-    <!-- Task Details Modal -->
-    <div class="modal fade" id="taskDetailModal" tabindex="-1">
+
+
+    <!-- Latest Image Modal -->
+    <div class="modal fade" id="latestImageModal" tabindex="-1">
         <div class="modal-dialog modal-lg">
             <div class="modal-content">
                 <div class="modal-header">
-                    <h5 class="modal-title">Task Details</h5>
+                    <h5 class="modal-title">Latest Processed Image</h5>
                     <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
                 </div>
-                <div class="modal-body" id="taskDetailContent">
-                    <!-- Task details will be loaded here -->
+                <div class="modal-body text-center" id="latestImageContent">
+                    <!-- Latest image will be loaded here -->
                 </div>
                 <div class="modal-footer">
                     <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
                 </div>
             </div>
         </div>
-    </div>
-
-    <!-- Image Preview Modal -->
-    <div class="modal fade" id="imagePreviewModal" tabindex="-1">
-        <div class="modal-dialog modal-lg modal-dialog-centered">
-            <div class="modal-content">
-                <div class="modal-header">
-                    <h5 class="modal-title">Image Preview</h5>
-                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
-                </div>
-                <div class="modal-body text-center">
-                    <div class="spinner-container" style="display: flex; justify-content: center; align-items: center; min-height: 200px;">
-                        <div class="spinner-border text-primary" role="status">
-                            <span class="visually-hidden">Loading...</span>
-                        </div>
-                    </div>
-                    <img src="" class="modal-image img-fluid" style="display: none; max-height: 80vh;" alt="Preview">
-                </div>
-                <div class="modal-footer">
-                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
-                </div>
-            </div>
-        </div>
-    </div>
-
-    <!-- Toast Container for Notifications -->
-    <div class="toast-container position-fixed bottom-0 end-0 p-3">
-        <!-- Toasts will be inserted here dynamically -->
     </div>
 
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
-    <script>
-        // Ensure these functions are available before app.js loads
-        function loadTasksFromLocalStorage() {
-            try {
-                const tasksJson = localStorage.getItem('tasks');
-                return tasksJson ? JSON.parse(tasksJson) : [];
-            } catch (error) {
-                console.error('Error loading tasks from localStorage:', error);
-                return [];
-            }
-        }
-        
-        function saveTasksToLocalStorage() {
-            try {
-                localStorage.setItem('tasks', JSON.stringify(tasks));
-            } catch (error) {
-                console.error('Error saving tasks to localStorage:', error);
-            }
-        }
-    </script>
-    <script src="static/app.js?v=2"></script>
+    <script src="static/app.js?v=5"></script>
 </body>
 </html>

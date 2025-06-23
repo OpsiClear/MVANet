@@ -7,7 +7,6 @@ import torch.nn.functional as F
 import ttach as tta
 from torch.amp import autocast
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Optional, Callable
 import argparse
 import logging
 import time
@@ -15,7 +14,6 @@ import os
 from functools import lru_cache
 import threading
 import io
-import datetime
 
 # Configuration Constants
 MODEL_IMAGE_SIZE = (1024, 1024)
@@ -158,9 +156,9 @@ def create_overlay(original_image: Image.Image, mask: Image.Image) -> Image.Imag
 # File Operations
 def save_image_files(
     mask: Image.Image,
-    original_image: Optional[Image.Image],
+    original_image: Image.Image | None,
     output_path: Path,
-    overlay_path: Optional[Path] = None
+    overlay_path: Path | None = None,
 ):
     """Optimized image saving with buffered writes"""
 
@@ -220,7 +218,7 @@ def process_folder_recursive(
     # Create mask output folder at parent level
     mask_output_folder = folder_path.parent / (folder_path.name + "_mask")
     mask_output_folder.mkdir(exist_ok=True)
-    
+
     if save_overlay:
         overlay_output_folder = folder_path.parent / (folder_path.name + "_overlay")
         overlay_output_folder.mkdir(exist_ok=True)
@@ -228,22 +226,22 @@ def process_folder_recursive(
     def process_folder_internal(current_folder: Path, relative_path: Path = Path()):
         # Get all subfolders
         subfolders = [f for f in current_folder.iterdir() if f.is_dir()]
-        
+
         if subfolders:
             # If subfolders exist, process each subfolder
             for subfolder in subfolders:
                 new_relative_path = relative_path / subfolder.name
                 process_folder_internal(subfolder, new_relative_path)
-        
+
         # Process current folder's images
         # Create corresponding subfolder in mask output directory
         current_mask_folder = mask_output_folder / relative_path
         current_mask_folder.mkdir(exist_ok=True, parents=True)
-        
+
         if save_overlay:
             current_overlay_folder = overlay_output_folder / relative_path
             current_overlay_folder.mkdir(exist_ok=True, parents=True)
-        
+
         # Modified process_folder call with new output locations
         process_folder(
             current_folder,
@@ -264,8 +262,8 @@ def process_folder(
     device: torch.device,
     save_overlay: bool = False,
     use_tta: bool = True,
-    output_folder: Optional[Path] = None,
-    overlay_folder: Optional[Path] = None,
+    output_folder: Path | None = None,
+    overlay_folder: Path | None = None,
 ):
     """Process images with optimized CPU and I/O operations"""
     start_time = time.time()
@@ -290,7 +288,7 @@ def process_folder(
     if output_folder is None:
         output_folder = folder_path.parent / (folder_path.name + "_mask")
     output_folder.mkdir(exist_ok=True)
-    
+
     if save_overlay and overlay_folder is None:
         overlay_folder = folder_path.parent / (folder_path.name + "_overlay")
         overlay_folder.mkdir(exist_ok=True)
@@ -352,7 +350,7 @@ def process_folder(
                             mask,
                             original_image,
                             output_path,
-                            overlay_path
+                            overlay_path,
                         )
                     )
 

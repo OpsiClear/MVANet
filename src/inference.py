@@ -315,12 +315,35 @@ def process_folder(
         logging.warning(f"No supported images found in {folder_path}")
         return
 
-    logging.info(f"Found {len(image_files)} images to process")
-
     # Use provided overlay folder or create default one
     if overlay_folder is None:
         overlay_folder = folder_path.parent / (folder_path.name + "_overlay")
     overlay_folder.mkdir(exist_ok=True)
+
+    # Dry run: Filter out images that already have processed outputs
+    files_to_process = []
+    skipped_files = []
+    
+    for img_path in image_files:
+        overlay_path = overlay_folder / (img_path.stem + ".png")
+        if overlay_path.exists():
+            skipped_files.append(img_path)
+            logging.info(f"Skipping {img_path.name} - output already exists at {overlay_path}")
+        else:
+            files_to_process.append(img_path)
+    
+    # Log summary of dry run
+    total_files = len(image_files)
+    files_to_process_count = len(files_to_process)
+    skipped_count = len(skipped_files)
+    
+    logging.info(f"Dry run complete: {total_files} total images found")
+    logging.info(f"  - {files_to_process_count} images to process")
+    logging.info(f"  - {skipped_count} images already processed (skipped)")
+    
+    if not files_to_process:
+        logging.info("All images have already been processed. Nothing to do.")
+        return
 
     # Pre-compile TTA transforms
     if use_tta:
@@ -328,8 +351,8 @@ def process_folder(
 
     # Process images in chunks for better memory management
     chunk_size = 10  # Adjust based on available memory
-    for i in range(0, len(image_files), chunk_size):
-        chunk = image_files[i : i + chunk_size]
+    for i in range(0, len(files_to_process), chunk_size):
+        chunk = files_to_process[i : i + chunk_size]
 
         with ThreadPoolExecutor(max_workers=NUM_WORKERS) as executor:
             # Submit preprocessing tasks
@@ -376,7 +399,6 @@ def process_folder(
                             original_image,
                             overlay_path,
                         )
-
                     )
 
                     img_process_time = time.time() - img_start_time
@@ -401,9 +423,10 @@ def process_folder(
 
     total_time = time.time() - start_time
     logging.info(
-        f"Completed processing {len(image_files)} images in {total_time:.2f} seconds"
+        f"Completed processing {files_to_process_count} new images in {total_time:.2f} seconds"
     )
-    logging.info(f"Average time per image: {total_time/len(image_files):.2f} seconds")
+    if files_to_process_count > 0:
+        logging.info(f"Average time per image: {total_time/files_to_process_count:.2f} seconds")
 
 
 # CLI Setup

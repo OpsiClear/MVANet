@@ -22,6 +22,7 @@ MODEL_IMAGE_SIZE = (1024, 1024)
 NUM_WORKERS = min(8, os.cpu_count() or 1)  # Optimize thread count
 SUPPORTED_FORMATS = {".jpg", ".jpeg", ".png", ".bmp"}
 CHUNK_SIZE = 1024 * 1024  # 1MB chunks for file operations
+SKIP_KEYWORDS = ["montage"]  # Keywords in filename to skip processing
 
 # Thread-local storage for per-thread transform objects
 thread_local = threading.local()
@@ -76,9 +77,7 @@ def rgb_loader_refiner(
 
 
 # Model Related Functions
-def load_model(
-    device: torch.device, model_path: Path | None = None
-) -> torch.nn.Module:
+def load_model(device: torch.device, model_path: Path | None = None) -> torch.nn.Module:
     """Loads and prepares the model for inference
 
     :param device: Device to load the model on
@@ -315,6 +314,39 @@ def process_folder(
         logging.warning(f"No supported images found in {folder_path}")
         return
 
+    # Filter out files with skip keywords in filename
+    filtered_image_files = []
+    keyword_skipped_files = []
+
+    for file_path in image_files:
+        filename_lower = file_path.name.lower()
+        should_skip = any(
+            keyword.lower() in filename_lower for keyword in SKIP_KEYWORDS
+        )
+
+        if should_skip:
+            keyword_skipped_files.append(file_path)
+            logging.info(f"Skipping {file_path.name} - contains skip keyword")
+        else:
+            filtered_image_files.append(file_path)
+
+    # Log keyword filtering summary
+    if keyword_skipped_files:
+        logging.info(
+            f"Filtered out {len(keyword_skipped_files)} files containing skip keywords: {SKIP_KEYWORDS}"
+        )
+
+    # Update image_files to use filtered list
+    image_files = filtered_image_files
+
+    if not image_files:
+        logging.warning(
+            "No images to process after filtering (all contained skip keywords)"
+        )
+        return
+
+    logging.info(f"Found {len(image_files)} images to process after filtering")
+
     # Use provided overlay folder or create default one
     if overlay_folder is None:
         overlay_folder = folder_path.parent / (folder_path.name + "_overlay")
@@ -323,24 +355,26 @@ def process_folder(
     # Dry run: Filter out images that already have processed outputs
     files_to_process = []
     skipped_files = []
-    
+
     for img_path in image_files:
         overlay_path = overlay_folder / (img_path.stem + ".png")
         if overlay_path.exists():
             skipped_files.append(img_path)
-            logging.info(f"Skipping {img_path.name} - output already exists at {overlay_path}")
+            logging.info(
+                f"Skipping {img_path.name} - output already exists at {overlay_path}"
+            )
         else:
             files_to_process.append(img_path)
-    
+
     # Log summary of dry run
     total_files = len(image_files)
     files_to_process_count = len(files_to_process)
     skipped_count = len(skipped_files)
-    
+
     logging.info(f"Dry run complete: {total_files} total images found")
     logging.info(f"  - {files_to_process_count} images to process")
     logging.info(f"  - {skipped_count} images already processed (skipped)")
-    
+
     if not files_to_process:
         logging.info("All images have already been processed. Nothing to do.")
         return
@@ -385,7 +419,7 @@ def process_folder(
 
                     # CPU Processing
                     mask = postprocess_mask(mask_tensor.float(), original_size)
-                    
+
                     # Load original image for overlay
                     with Image.open(img_path) as original_image:
                         original_image = original_image.convert("RGB")
@@ -426,7 +460,9 @@ def process_folder(
         f"Completed processing {files_to_process_count} new images in {total_time:.2f} seconds"
     )
     if files_to_process_count > 0:
-        logging.info(f"Average time per image: {total_time/files_to_process_count:.2f} seconds")
+        logging.info(
+            f"Average time per image: {total_time/files_to_process_count:.2f} seconds"
+        )
 
 
 # CLI Setup

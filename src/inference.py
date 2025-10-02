@@ -5,7 +5,7 @@ from torchvision import transforms
 from pathlib import Path
 import torch.nn.functional as F
 import ttach as tta
-from torch.amp import autocast
+from torch.amp.autocast_mode import autocast
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import argparse
 import logging
@@ -19,10 +19,9 @@ from .MVANet import inf_MVANet
 # Configuration Constants
 MODEL_PATH = Path(__file__).parent.parent / "models" / "MVANet.pth"
 MODEL_IMAGE_SIZE = (1024, 1024)
-NUM_WORKERS = min(8, os.cpu_count() or 1)  # Optimize thread count
+NUM_WORKERS = min(8, os.cpu_count() or 1)
 SUPPORTED_FORMATS = {".jpg", ".jpeg", ".png", ".bmp"}
-CHUNK_SIZE = 1024 * 1024  # 1MB chunks for file operations
-SKIP_KEYWORDS = ["montage"]  # Keywords in filename to skip processing
+SKIP_KEYWORDS = ["montage"]
 
 # Thread-local storage for per-thread transform objects
 thread_local = threading.local()
@@ -38,92 +37,13 @@ logging.basicConfig(
 )
 
 
-# Core Utility Functions
-def get_device() -> torch.device:
-    return torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-
-def setup_tta_transforms():
-    """Setup test-time augmentation transforms"""
-    return tta.Compose(
-        [
-            tta.HorizontalFlip(),
-            tta.VerticalFlip(),
-        ]
-    )
-
-
-# Image Processing Functions
-def rescale_to(target: torch.Tensor, scale_factor: float = 2, interpolation="nearest"):
-    """Rescales tensor by a factor"""
-    return F.interpolate(target, scale_factor=scale_factor, mode=interpolation)
-
-
-def resize_as(target: torch.Tensor, source: torch.Tensor, interpolation="bilinear"):
-    """Resizes x to match y's dimensions"""
-    return F.interpolate(target, size=source.shape[-2:], mode=interpolation)
-
-
-def rgb_loader_refiner(
-    original_image: Image.Image, target_size: tuple[int, int]
-) -> tuple[torch.Tensor, int, int, Image.Image]:
-    """Handles initial image loading and scaling"""
-    h, w = original_image.size
-    image = original_image
-    if image.mode != "RGB":
-        image = image.convert("RGB")
-    image = image.resize(target_size, resample=Image.Resampling.LANCZOS)
-    return image.convert("RGB"), h, w, original_image
-
-
 # Model Related Functions
 def load_model(device: torch.device, model_path: Path | None = None) -> torch.nn.Module:
-    """Loads and prepares the model for inference
-
-    :param device: Device to load the model on
-    :param model_path: Optional path to the model weights file (uses default if None)
-    :return: Loaded model ready for inference
-    """
+    """Loads and prepares the model for inference"""
     if model_path is None:
         model_path = MODEL_PATH
 
-    # Initialize the inference model architecture
-    try:
-        model = inf_MVANet()
-    except FileNotFoundError as e:
-        if "swin_base_patch4_window12_384_22kto1k.pth" in str(e):
-            # Handle missing Swin pretrained weights - they're included in the complete checkpoint
-            logging.warning(
-                "Swin pretrained weights file not found locally. Using weights from complete checkpoint."
-            )
-            # Temporarily patch the SwinB function to skip pretrained loading
-            from . import SwinTransformer as swin_module
-
-            original_swinb = swin_module.SwinB
-
-            def patched_swinb(pretrained=True):
-                from .SwinTransformer import SwinTransformer
-
-                model = SwinTransformer(
-                    embed_dim=128,
-                    depths=[2, 2, 18, 2],
-                    num_heads=[4, 8, 16, 32],
-                    window_size=12,
-                )
-                # Skip pretrained loading - weights will come from complete checkpoint
-                return model
-
-            # Temporarily replace SwinB
-            swin_module.SwinB = patched_swinb
-            try:
-                model = inf_MVANet()
-            finally:
-                # Restore original SwinB
-                swin_module.SwinB = original_swinb
-        else:
-            raise e
-
-    # Load the state dict from the saved model
+    model = inf_MVANet()
     checkpoint = torch.load(model_path, weights_only=False, map_location=device)
 
     # Handle different checkpoint formats
@@ -131,16 +51,9 @@ def load_model(device: torch.device, model_path: Path | None = None) -> torch.nn
         state_dict = checkpoint["state_dict"]
     elif isinstance(checkpoint, dict) and "model" in checkpoint:
         state_dict = checkpoint["model"]
-    elif hasattr(checkpoint, "state_dict"):
-        state_dict = checkpoint.state_dict()
     else:
-        # Assume checkpoint is the model itself or state_dict
-        if hasattr(checkpoint, "load_state_dict"):
-            return checkpoint.to(device).eval()
-        else:
-            state_dict = checkpoint
+        state_dict = checkpoint
 
-    # Load weights into the model
     model.load_state_dict(state_dict, strict=False)
     model = model.to(device)
     model.eval()
@@ -171,22 +84,16 @@ def preprocess_image(
 ) -> tuple[torch.Tensor, tuple[int, int]]:
     """Optimized image preprocessing"""
     with io.open(str(image_path), "rb") as f:
-        # Use buffer for faster reading
         img_buffer = io.BytesIO(f.read())
         with Image.open(img_buffer) as image:
             original_size = image.size
-            # Use BILINEAR for faster resizing
             resized_image = image.convert("RGB").resize(
                 MODEL_IMAGE_SIZE, resample=Image.Resampling.BILINEAR
             )
-            # Use thread-local transform
             img_tensor = get_thread_transform()(resized_image).unsqueeze(0)
-
-            # Batch transfer to GPU
             return img_tensor.to(device, non_blocking=True), original_size
 
 
-# Post-processing Functions
 def postprocess_mask(
     mask_tensor: torch.Tensor, original_size: tuple[int, int]
 ) -> Image.Image:
@@ -215,40 +122,71 @@ def create_overlay(original_image: Image.Image, mask: Image.Image) -> Image.Imag
     return Image.merge("RGBA", (r, g, b, mask))
 
 
-# File Operations
+def find_images_folders_recursive(root_path: Path) -> list[Path]:
+    """Find all folders named 'images' recursively under root_path"""
+    images_folders = []
+    for item in root_path.rglob("*"):
+        if item.is_dir() and item.name.lower() == "images":
+            images_folders.append(item)
+    return images_folders
+
+
+def get_output_paths_for_images_folder(images_folder: Path) -> tuple[Path, Path]:
+    """Get overlay and mask output paths for an images folder"""
+    parent = images_folder.parent
+    overlays_path = parent / "overlays"
+    masks_path = parent / "masks"
+    return overlays_path, masks_path
+
+
 def save_image_files(
     mask: Image.Image,
     original_image: Image.Image,
     overlay_path: Path,
+    mask_path: Path | None = None,
 ):
-    """Save overlay image with buffered writes"""
+    """Save overlay image and optionally pure mask with buffered writes"""
+    # Create RGBA overlay
     overlay = create_overlay(original_image, mask)
     buffer = io.BytesIO()
     overlay.save(buffer, format="PNG", optimize=True)
     with open(str(overlay_path), "wb") as f:
         f.write(buffer.getvalue())
+    
+    # Save pure alpha mask if path provided
+    if mask_path is not None:
+        mask_buffer = io.BytesIO()
+        mask.save(mask_buffer, format="PNG", optimize=True)
+        with open(str(mask_path), "wb") as f:
+            f.write(mask_buffer.getvalue())
 
 
-# Main Processing Functions
+def run_inference(
+    img_tensor: torch.Tensor, 
+    model: torch.nn.Module, 
+    tta_model: torch.nn.Module | None = None
+) -> torch.Tensor:
+    """Consolidated inference function"""
+    with torch.no_grad():
+        if tta_model is not None:
+            return tta_model(img_tensor)
+        else:
+            return model(img_tensor)
+
+
 def infer_image(
     image_path: Path, model: torch.nn.Module, device: torch.device, use_tta: bool = True
 ) -> Image.Image:
     """Enhanced inference with optional test-time augmentation"""
     img_tensor, original_size = preprocess_image(image_path, device)
-
-    with torch.no_grad():
-        if use_tta:
-            tta_transforms = setup_tta_transforms()
-            masks = []
-            for transformer in tta_transforms:
-                aug_img = transformer.augment_image(img_tensor)
-                mask = model(aug_img)
-                deaug_mask = transformer.deaugment_mask(mask)
-                masks.append(deaug_mask)
-            mask_tensor = torch.mean(torch.stack(masks, dim=0), dim=0)
-        else:
-            mask_tensor = model(img_tensor)
-
+    
+    # Setup TTA model once if needed
+    tta_model = None
+    if use_tta:
+        tta_wrapper = tta.Compose([tta.HorizontalFlip(), tta.VerticalFlip()])
+        tta_model = tta.SegmentationTTAWrapper(model, tta_wrapper)
+    
+    mask_tensor = run_inference(img_tensor, model, tta_model)
     return postprocess_mask(mask_tensor, original_size)
 
 
@@ -258,36 +196,69 @@ def process_folder_recursive(
     device: torch.device,
     use_tta: bool = True,
 ):
-    """Process all images in folder and its subfolders recursively"""
-    # Create overlay output folder at parent level
-    overlay_output_folder = folder_path.parent / (folder_path.name + "_overlay")
-    overlay_output_folder.mkdir(exist_ok=True)
-
-    def process_folder_internal(current_folder: Path, relative_path: Path = Path()):
-        # Get all subfolders
-        subfolders = [f for f in current_folder.iterdir() if f.is_dir()]
-
-        if subfolders:
-            # If subfolders exist, process each subfolder
-            for subfolder in subfolders:
-                new_relative_path = relative_path / subfolder.name
-                process_folder_internal(subfolder, new_relative_path)
-
-        # Process current folder's images
-        # Create corresponding subfolder in overlay output directory
-        current_overlay_folder = overlay_output_folder / relative_path
-        current_overlay_folder.mkdir(exist_ok=True, parents=True)
-
-        # Process folder with overlay output location
-        process_folder(
-            current_folder,
+    """Process all images in folders named 'images' recursively"""
+    images_folders = find_images_folders_recursive(folder_path)
+    
+    if not images_folders:
+        logging.warning(f"No folders named 'images' found under {folder_path}")
+        return
+    
+    logging.info(f"Found {len(images_folders)} 'images' folders to process")
+    
+    for i, images_folder in enumerate(images_folders, 1):
+        logging.info(f"Processing images folder {i}/{len(images_folders)}: {images_folder}")
+        
+        overlays_path, masks_path = get_output_paths_for_images_folder(images_folder)
+        overlays_path.mkdir(exist_ok=True, parents=True)
+        masks_path.mkdir(exist_ok=True, parents=True)
+        
+        process_images_recursively(
+            images_folder,
             model,
             device,
+            overlays_path,
+            masks_path,
             use_tta=use_tta,
-            overlay_folder=current_overlay_folder,
         )
 
-    process_folder_internal(folder_path)
+
+def process_images_recursively(
+    current_folder: Path,
+    model: torch.nn.Module,
+    device: torch.device,
+    base_overlay_path: Path,
+    base_mask_path: Path,
+    relative_path: Path = Path(),
+    use_tta: bool = True,
+):
+    """Recursively process images in current folder and all subdirectories"""
+    current_overlay_path = base_overlay_path / relative_path
+    current_mask_path = base_mask_path / relative_path
+    
+    current_overlay_path.mkdir(exist_ok=True, parents=True)
+    current_mask_path.mkdir(exist_ok=True, parents=True)
+    
+    process_folder(
+        current_folder,
+        model,
+        device,
+        use_tta=use_tta,
+        overlay_folder=current_overlay_path,
+        mask_folder=current_mask_path,
+    )
+    
+    for item in current_folder.iterdir():
+        if item.is_dir():
+            new_relative_path = relative_path / item.name
+            process_images_recursively(
+                item,
+                model,
+                device,
+                base_overlay_path,
+                base_mask_path,
+                new_relative_path,
+                use_tta,
+            )
 
 
 def process_folder(
@@ -296,27 +267,30 @@ def process_folder(
     device: torch.device,
     use_tta: bool = True,
     overlay_folder: Path | None = None,
+    mask_folder: Path | None = None,
 ):
     """Process images with optimized CPU and I/O operations"""
     start_time = time.time()
-    logging.info(f"Starting processing of folder: {folder_path}")
 
     if not folder_path.is_dir():
         raise ValueError(f"Folder {folder_path} does not exist")
 
-    image_files = [
-        file_path
-        for file_path in folder_path.iterdir()
-        if file_path.suffix.lower() in SUPPORTED_FORMATS
-    ]
-
-    if not image_files:
-        logging.warning(f"No supported images found in {folder_path}")
+    # Find image files efficiently
+    try:
+        image_files = [
+            file_path for file_path in folder_path.iterdir()
+            if file_path.is_file() and file_path.suffix.lower() in SUPPORTED_FORMATS
+        ]
+    except Exception as e:
+        logging.error(f"Error listing directory contents: {e}")
         return
 
-    # Filter out files with skip keywords in filename
+    if not image_files:
+        return
+
+    # Filter out files with skip keywords
     filtered_image_files = []
-    keyword_skipped_files = []
+    keyword_skipped_count = 0
 
     for file_path in image_files:
         filename_lower = file_path.name.lower()
@@ -325,71 +299,62 @@ def process_folder(
         )
 
         if should_skip:
-            keyword_skipped_files.append(file_path)
-            logging.info(f"Skipping {file_path.name} - contains skip keyword")
+            keyword_skipped_count += 1
         else:
             filtered_image_files.append(file_path)
 
-    # Log keyword filtering summary
-    if keyword_skipped_files:
-        logging.info(
-            f"Filtered out {len(keyword_skipped_files)} files containing skip keywords: {SKIP_KEYWORDS}"
-        )
-
-    # Update image_files to use filtered list
     image_files = filtered_image_files
 
     if not image_files:
-        logging.warning(
-            "No images to process after filtering (all contained skip keywords)"
-        )
+        if keyword_skipped_count > 0:
+            logging.info(f"Skipped {keyword_skipped_count} files with keywords: {SKIP_KEYWORDS}")
         return
 
-    logging.info(f"Found {len(image_files)} images to process after filtering")
-
-    # Use provided overlay folder or create default one
-    if overlay_folder is None:
-        overlay_folder = folder_path.parent / (folder_path.name + "_overlay")
+    if overlay_folder is None or mask_folder is None:
+        raise ValueError("Both overlay_folder and mask_folder must be provided")
+    
     overlay_folder.mkdir(exist_ok=True)
+    mask_folder.mkdir(exist_ok=True)
 
-    # Dry run: Filter out images that already have processed outputs
+    # Check which files need processing
     files_to_process = []
-    skipped_files = []
+    skipped_count = 0
 
     for img_path in image_files:
         overlay_path = overlay_folder / (img_path.stem + ".png")
         if overlay_path.exists():
-            skipped_files.append(img_path)
-            logging.info(
-                f"Skipping {img_path.name} - output already exists at {overlay_path}"
-            )
+            skipped_count += 1
         else:
             files_to_process.append(img_path)
 
-    # Log summary of dry run
+    # Log processing summary
     total_files = len(image_files)
     files_to_process_count = len(files_to_process)
-    skipped_count = len(skipped_files)
-
-    logging.info(f"Dry run complete: {total_files} total images found")
-    logging.info(f"  - {files_to_process_count} images to process")
-    logging.info(f"  - {skipped_count} images already processed (skipped)")
-
-    if not files_to_process:
-        logging.info("All images have already been processed. Nothing to do.")
+    
+    if files_to_process_count == 0:
+        if total_files > 0:
+            logging.info(f"All {total_files} images in {folder_path.name} already processed")
         return
 
-    # Pre-compile TTA transforms
+    if skipped_count > 0:
+        logging.info(f"Processing {files_to_process_count}/{total_files} images in {folder_path.name} ({skipped_count} already done)")
+    else:
+        logging.info(f"Processing {files_to_process_count} images in {folder_path.name}")
+
+    # Setup TTA model once for the entire batch (MAJOR OPTIMIZATION)
+    tta_model = None
     if use_tta:
-        tta_transforms = setup_tta_transforms()
+        tta_wrapper = tta.Compose([tta.HorizontalFlip(), tta.VerticalFlip()])
+        tta_model = tta.SegmentationTTAWrapper(model, tta_wrapper)
 
     # Process images in chunks for better memory management
-    chunk_size = 10  # Adjust based on available memory
+    chunk_size = 10
+    processed_count = 0
+    
     for i in range(0, len(files_to_process), chunk_size):
         chunk = files_to_process[i : i + chunk_size]
 
         with ThreadPoolExecutor(max_workers=NUM_WORKERS) as executor:
-            # Submit preprocessing tasks
             preprocess_futures = {
                 executor.submit(preprocess_image, img_path, device): img_path
                 for img_path in chunk
@@ -400,22 +365,11 @@ def process_folder(
             for future in as_completed(preprocess_futures):
                 img_path = preprocess_futures[future]
                 try:
-                    img_start_time = time.time()
                     img_tensor, original_size = future.result()
 
-                    # GPU Processing
-                    with autocast(enabled=True, device_type="cuda"), torch.no_grad():
-                        if use_tta:
-                            masks = []
-                            for transformer in tta_transforms:
-                                aug_img = transformer.augment_image(img_tensor)
-                                with autocast(device_type="cuda"):
-                                    mask = model(aug_img)
-                                deaug_mask = transformer.deaugment_mask(mask)
-                                masks.append(deaug_mask)
-                            mask_tensor = torch.mean(torch.stack(masks, dim=0), dim=0)
-                        else:
-                            mask_tensor = model(img_tensor)
+                    # GPU Processing - use pre-created TTA model
+                    with autocast(enabled=True, device_type="cuda"):
+                        mask_tensor = run_inference(img_tensor, model, tta_model)
 
                     # CPU Processing
                     mask = postprocess_mask(mask_tensor.float(), original_size)
@@ -424,6 +378,7 @@ def process_folder(
                     with Image.open(img_path) as original_image:
                         original_image = original_image.convert("RGB")
                         overlay_path = overlay_folder / (img_path.stem + ".png")
+                        mask_path = mask_folder / (img_path.stem + ".png")
 
                     # Submit save task
                     save_futures.append(
@@ -432,16 +387,18 @@ def process_folder(
                             mask,
                             original_image,
                             overlay_path,
+                            mask_path,
                         )
                     )
 
-                    img_process_time = time.time() - img_start_time
-                    logging.info(
-                        f"Processed {img_path.name} in {img_process_time:.2f} seconds"
-                    )
+                    processed_count += 1
+                    
+                    # Progress logging for large batches
+                    if files_to_process_count > 20 and processed_count % 10 == 0:
+                        logging.info(f"Progress: {processed_count}/{files_to_process_count} images processed")
 
                 except Exception as e:
-                    logging.error(f"Error processing {img_path}: {e}")
+                    logging.error(f"Error processing {img_path.name}: {e}")
                     continue
 
             # Wait for all saves to complete
@@ -456,16 +413,12 @@ def process_folder(
             torch.cuda.empty_cache()
 
     total_time = time.time() - start_time
-    logging.info(
-        f"Completed processing {files_to_process_count} new images in {total_time:.2f} seconds"
-    )
+    avg_time = total_time / files_to_process_count if files_to_process_count > 0 else 0
+    
     if files_to_process_count > 0:
-        logging.info(
-            f"Average time per image: {total_time/files_to_process_count:.2f} seconds"
-        )
+        logging.info(f"Completed {files_to_process_count} images in {total_time:.1f}s (avg: {avg_time:.2f}s/image)")
 
 
-# CLI Setup
 def parse_args():
     """Parse command line arguments"""
     parser = argparse.ArgumentParser(description="Image segmentation inference script")
@@ -487,7 +440,7 @@ def parse_args():
     parser.add_argument(
         "--log_level",
         type=str,
-        default="WARNING",
+        default="INFO",
         choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
         help="Set the logging level (default: INFO)",
     )
@@ -495,10 +448,8 @@ def parse_args():
     return parser.parse_args()
 
 
-# Main Entry Point
 if __name__ == "__main__":
     start_time = time.time()
-    logging.info("Starting inference script")
 
     args = parse_args()
     torch.cuda.empty_cache()
@@ -512,9 +463,8 @@ if __name__ == "__main__":
 
     logging.info(f"Loading model from {MODEL_PATH}")
     model = load_model(device)
-    logging.info(f"Model (inf_MVANet) loaded successfully on {device}")
+    logging.info(f"Model loaded successfully on {device}")
 
-    # Use the recursive processing function (always saves overlays)
     process_folder_recursive(
         args.input_folder,
         model,
@@ -523,4 +473,4 @@ if __name__ == "__main__":
     )
 
     total_time = time.time() - start_time
-    logging.info(f"Total script execution time: {total_time:.2f} seconds")
+    logging.info(f"Total execution time: {total_time:.1f} seconds")

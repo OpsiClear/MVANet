@@ -16,7 +16,12 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-from src.inference import load_model, process_folder_recursive
+from src.inference import (
+    load_model,
+    process_folder_recursive,
+    find_images_folders_recursive,
+    get_output_paths_for_images_folder,
+)
 
 
 # Configure logging to capture to memory
@@ -174,9 +179,30 @@ def background_process_task(request_id: str, input_folder_str: str, use_tta: boo
         load_model_once()
         log_with_task_id("Model loaded successfully", "INFO", request_id)
 
-        # Process folder
+        # Process folder - find images folders and determine output paths
         input_folder = Path(input_folder_str)
-        overlay_output_folder = input_folder.parent / (input_folder.name + "_overlay")
+
+        # Import the new helper functions
+        from src.inference import (
+            find_images_folders_recursive,
+            get_output_paths_for_images_folder,
+        )
+
+        # Find images folders
+        images_folders = find_images_folders_recursive(input_folder)
+
+        if not images_folders:
+            # Raise error if no 'images' folders found
+            raise ValueError(f"No folders named 'images' found under {input_folder}")
+
+        # Use the first images folder found for output path determination
+        first_images_folder = images_folders[0]
+        overlay_output_folder, masks_output_folder = get_output_paths_for_images_folder(
+            first_images_folder
+        )
+        log_with_task_id(
+            f"Found {len(images_folders)} 'images' folders", "INFO", request_id
+        )
 
         # Update task with output folder path immediately
         if request_id in tasks:
@@ -186,7 +212,10 @@ def background_process_task(request_id: str, input_folder_str: str, use_tta: boo
             f"Starting image processing for folder: {input_folder}", "INFO", request_id
         )
         log_with_task_id(
-            f"Output will be saved to: {overlay_output_folder}", "INFO", request_id
+            f"Overlays will be saved to: {overlay_output_folder}", "INFO", request_id
+        )
+        log_with_task_id(
+            f"Masks will be saved to: {masks_output_folder}", "INFO", request_id
         )
         log_with_task_id(
             f"Test-Time Augmentation: {'Enabled' if use_tta else 'Disabled'}",
@@ -346,116 +375,131 @@ async def get_status(request_id: str) -> ProcessResponse:
     return tasks[request_id]
 
 
+def find_images_in_folder(folder_path: Path) -> list[Path]:
+    """Find all image files in a folder with supported extensions"""
+    if not folder_path.exists():
+        return []
+
+    image_extensions = {".png", ".jpg", ".jpeg", ".gif", ".bmp"}
+    images = []
+
+    for ext in image_extensions:
+        images.extend(folder_path.glob(f"*{ext}"))
+        images.extend(folder_path.glob(f"*{ext.upper()}"))
+        images.extend(folder_path.glob(f"**/*{ext}"))
+        images.extend(folder_path.glob(f"**/*{ext.upper()}"))
+
+    return images
+
+
+def get_current_processing_output_folder() -> Path | None:
+    """Get the output folder for the currently processing task"""
+    global current_input_folder
+    if not current_input_folder:
+        return None
+
+    try:
+        input_path = Path(current_input_folder)
+        images_folders = find_images_folders_recursive(input_path)
+        if images_folders:
+            first_images_folder = images_folders[0]
+            overlay_output, _ = get_output_paths_for_images_folder(first_images_folder)
+            return overlay_output
+    except Exception as e:
+        logger.error(f"Error getting current processing output folder: {e}")
+
+    return None
+
+
+def create_image_response(
+    image_path: Path,
+    output_folder: Path,
+    task_id: str,
+    input_folder: str | None = None,
+    task_status: str = "completed",
+) -> dict:
+    """Create a standardized image response"""
+    return {
+        "task_id": task_id,
+        "input_folder": input_folder,
+        "output_folder": str(output_folder),
+        "image_name": image_path.name,
+        "image_path": str(image_path.relative_to(output_folder)),
+        "image_url": f"/api/images/{task_id}/{image_path.name}"
+        if task_id != "current_processing"
+        else f"/api/file/current_processing/{image_path.name}",
+        "modified_time": image_path.stat().st_mtime,
+        "task_status": task_status,
+    }
+
+
 @app.get("/api/latest-image")
 async def get_latest_processed_image():
     """Get the most recently saved processed image from any output folder"""
     try:
-        # Find all tasks that have output folders (including currently processing ones)
+        all_candidate_images = []
+
+        # 1. Check completed/failed tasks with output folders
         tasks_with_output = [
             (task_id, task) for task_id, task in tasks.items() if task.output_folder
         ]
 
-        if not tasks_with_output:
-            # Check if there's a current processing task that might have images
-            global current_input_folder
-            if current_input_folder:
-                try:
-                    input_path = Path(current_input_folder)
-                    potential_output = input_path.parent / (
-                        input_path.name + "_overlay"
-                    )
-
-                    if potential_output.exists():
-                        # Find images in this folder
-                        image_extensions = {".png", ".jpg", ".jpeg", ".gif", ".bmp"}
-                        all_images = []
-
-                        for ext in image_extensions:
-                            all_images.extend(list(potential_output.glob(f"*{ext}")))
-                            all_images.extend(
-                                list(potential_output.glob(f"*{ext.upper()}"))
-                            )
-                            all_images.extend(list(potential_output.glob(f"**/*{ext}")))
-                            all_images.extend(
-                                list(potential_output.glob(f"**/*{ext.upper()}"))
-                            )
-
-                        if all_images:
-                            latest_image = max(
-                                all_images, key=lambda f: f.stat().st_mtime
-                            )
-
-                            return {
-                                "task_id": "current_processing",
-                                "input_folder": current_input_folder,
-                                "output_folder": str(potential_output),
-                                "image_name": latest_image.name,
-                                "image_path": str(
-                                    latest_image.relative_to(potential_output)
-                                ),
-                                "image_url": f"/api/file/current_processing/{latest_image.name}",
-                                "modified_time": latest_image.stat().st_mtime,
-                                "task_status": "processing",
-                            }
-
-                except Exception as e:
-                    logger.error(f"Error checking current processing folder: {e}")
-
-            return JSONResponse(
-                status_code=404,
-                content={"detail": "No processed images found"},
-            )
-
-        # Find all image files from all output folders
-        image_extensions = {".png", ".jpg", ".jpeg", ".gif", ".bmp"}
-        all_image_files = []
-
         for task_id, task in tasks_with_output:
             output_folder = Path(task.output_folder)
-            if not output_folder.exists():
-                continue
+            images = find_images_in_folder(output_folder)
 
-            # Find all image files in this output folder
-            for ext in image_extensions:
-                all_image_files.extend(
-                    [(f, task_id, task) for f in output_folder.glob(f"*{ext}")]
-                )
-                all_image_files.extend(
-                    [(f, task_id, task) for f in output_folder.glob(f"*{ext.upper()}")]
-                )
-                all_image_files.extend(
-                    [(f, task_id, task) for f in output_folder.glob(f"**/*{ext}")]
-                )
-                all_image_files.extend(
-                    [
-                        (f, task_id, task)
-                        for f in output_folder.glob(f"**/*{ext.upper()}")
-                    ]
+            for img_path in images:
+                all_candidate_images.append(
+                    {
+                        "path": img_path,
+                        "task_id": task_id,
+                        "task": task,
+                        "output_folder": output_folder,
+                        "mtime": img_path.stat().st_mtime,
+                    }
                 )
 
-        if not all_image_files:
+        # 2. Check current processing task
+        current_output_folder = get_current_processing_output_folder()
+        if current_output_folder:
+            images = find_images_in_folder(current_output_folder)
+
+            for img_path in images:
+                all_candidate_images.append(
+                    {
+                        "path": img_path,
+                        "task_id": "current_processing",
+                        "task": None,
+                        "output_folder": current_output_folder,
+                        "mtime": img_path.stat().st_mtime,
+                    }
+                )
+
+        # 3. Find the most recent image
+        if not all_candidate_images:
             return JSONResponse(
-                status_code=404,
-                content={"detail": "No images found in any output folders"},
+                status_code=404, content={"detail": "No processed images found"}
             )
 
-        # Get the most recently modified image across all output folders
-        latest_image_file, associated_task_id, associated_task = max(
-            all_image_files, key=lambda x: x[0].stat().st_mtime
-        )
+        latest = max(all_candidate_images, key=lambda x: x["mtime"])
 
-        output_folder = Path(associated_task.output_folder)
-
-        return {
-            "task_id": associated_task_id,
-            "input_folder": associated_task.input_folder,
-            "output_folder": str(output_folder),
-            "image_name": latest_image_file.name,
-            "image_path": str(latest_image_file.relative_to(output_folder)),
-            "image_url": f"/api/images/{associated_task_id}/{latest_image_file.name}",
-            "modified_time": latest_image_file.stat().st_mtime,
-            "task_status": associated_task.status,
-        }
+        # 4. Create response
+        if latest["task_id"] == "current_processing":
+            return create_image_response(
+                latest["path"],
+                latest["output_folder"],
+                "current_processing",
+                input_folder=current_input_folder,
+                task_status="processing",
+            )
+        else:
+            return create_image_response(
+                latest["path"],
+                latest["output_folder"],
+                latest["task_id"],
+                input_folder=latest["task"].input_folder,
+                task_status=latest["task"].status,
+            )
 
     except Exception as e:
         logger.error(f"Error getting latest image: {str(e)}")

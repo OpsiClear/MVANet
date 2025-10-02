@@ -1,50 +1,50 @@
 [build-system]
-requires = ["hatchling"]
 build-backend = "hatchling.build"
+requires = ["hatchling"]
 
 [project]
-name = "mvanet"
-version = "0.1.0"
+dependencies = [
+  "numpy>=1.21.6",
+  "torch>=1.9.0",
+  "einops>=0.6.1",
+  "Pillow>=9.5.0",
+  "timm>=0.9.12",
+  "torchvision>=0.10.0",
+  "opencv-python>=4.10.0.84",
+  "mmdet>=2.17.0",
+  "mmengine>=0.8.1",
+  "mmsegmentation>=0.19.0",
+  "mmcv>=2.0.0rc4,<2.2.0",
+  "ttach>=0.0.3",
+  "tensorboard>=2.11.2",
+  "yapf>=0.40.2",
+  "addict>=2.4.0",
+  "matplotlib>=3.5.3",
+  "scipy>=1.7.3",
+  "tqdm>=4.65.2",
+  "build>=1.2.2.post1",
+  "fastapi>=0.115.8",
+  "uvicorn>=0.34.0",
+  "ray>=2.47.1",
+]
 description = "Add your description here"
+name = "mvanet"
 readme = "README.md"
 requires-python = ">=3.12"
-dependencies = [
-    "numpy>=1.21.6",
-    "torch>=1.9.0",
-    "einops>=0.6.1",
-    "Pillow>=9.5.0",
-    "timm>=0.9.12",
-    "torchvision>=0.10.0",
-    "opencv-python>=4.10.0.84",
-    "mmdet>=2.17.0",
-    "mmengine>=0.8.1",
-    "mmsegmentation>=0.19.0",
-    "mmcv>=2.0.0rc4,<2.2.0",
-    "ttach>=0.0.3",
-    "tensorboard>=2.11.2",
-    "yapf>=0.40.2",
-    "addict>=2.4.0",
-    "matplotlib>=3.5.3",
-    "scipy>=1.7.3",
-    "tqdm>=4.65.2",
-    "build>=1.2.2.post1",
-    "fastapi>=0.115.8",
-    "uvicorn>=0.34.0",
-    "ray>=2.47.1",
-]
+version = "0.1.0"
 
 [tool.hatch.build.targets.wheel]
 packages = ["MVANet.py", "SwinTransformer.py", "inference.py", "folder_monitor.py"]
 
 [tool.uv.sources]
 torch = [
-    { index = "pytorch-cu124", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+  {index = "pytorch-cu128", marker = "sys_platform == 'linux' or sys_platform == 'win32'"},
 ]
 torchvision = [
-    { index = "pytorch-cu124", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+  {index = "pytorch-cu128", marker = "sys_platform == 'linux' or sys_platform == 'win32'"},
 ]
 
 [[tool.uv.index]]
-name = "pytorch-cu124"
-url = "https://download.pytorch.org/whl/cu124"
 explicit = true
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"

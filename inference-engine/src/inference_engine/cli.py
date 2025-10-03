@@ -61,31 +61,37 @@ def infer(
 
 def list_models_cmd(verbose: bool = False):
     """List available models"""
+    logger = logging.getLogger(__name__)
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
+
     models = list_models()
 
     if not models:
-        print("No models installed")
+        logger.info("No models installed")
         return
 
-    print(f"Available models ({len(models)}):")
+    logger.info(f"Available models ({len(models)}):")
     for model_name in models:
         if verbose:
             info = get_model_info(model_name)
-            print(f"  {model_name}: {info.get('description', 'N/A')}")
+            logger.info(f"  {model_name}: {info.get('description', 'N/A')}")
         else:
-            print(f"  - {model_name}")
+            logger.info(f"  - {model_name}")
 
 
 def model_info(model: str):
     """Show model information"""
+    logger = logging.getLogger(__name__)
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
+
     try:
         info = get_model_info(model)
-        print(f"Model: {model}")
-        print(f"  Class: {info.get('class', 'N/A')}")
-        print(f"  Description: {info.get('description', 'N/A')}")
-        print(f"  TTA: {info.get('supports_tta', False)}")
+        logger.info(f"Model: {model}")
+        logger.info(f"  Class: {info.get('class', 'N/A')}")
+        logger.info(f"  Description: {info.get('description', 'N/A')}")
+        logger.info(f"  TTA: {info.get('supports_tta', False)}")
     except KeyError as e:
-        print(f"Error: {e}")
+        logger.error(f"Error: {e}")
 
 
 def main():

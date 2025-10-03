@@ -19,7 +19,8 @@ class MultiGPUInferenceEngine:
     """
     Multi-GPU inference engine that distributes work across multiple GPUs
 
-    Each GPU gets its own model instance and processes batches in parallel
+    Uses persistent worker threads to eliminate thread creation overhead.
+    Each GPU gets its own model instance and worker thread.
     """
 
     def __init__(
@@ -29,7 +30,7 @@ class MultiGPUInferenceEngine:
         use_fp16: bool = True,
     ):
         """
-        Initialize multi-GPU engine
+        Initialize multi-GPU engine with persistent workers
 
         Args:
             model_factory: Function that creates a model instance for a given device
@@ -39,6 +40,7 @@ class MultiGPUInferenceEngine:
         self.devices = devices
         self.use_fp16 = use_fp16
         self.num_gpus = len(devices)
+        self._shutdown = False
 
         # Create model instance for each GPU
         self.models = {}
@@ -46,24 +48,42 @@ class MultiGPUInferenceEngine:
             logger.info(f"Loading model on {device}")
             self.models[device] = model_factory(device)
 
-    def _worker(
-        self,
-        device: torch.device,
-        worker_id: int,
-        work_queue: Queue,
-        result_queue: Queue,
-        use_tta: bool,
-    ):
-        """Worker thread that processes images on a specific GPU"""
+        # Create persistent queues
+        self.work_queue = Queue()
+        self.result_queue = Queue()
+
+        # Start persistent worker threads (one per GPU)
+        self.workers = []
+        for i, device in enumerate(self.devices):
+            worker = threading.Thread(
+                target=self._worker_loop,
+                args=(device, i),
+                daemon=True,
+                name=f"GPU-{device}-Worker",
+            )
+            worker.start()
+            self.workers.append(worker)
+
+        logger.info(f"Started {len(self.workers)} persistent worker threads")
+
+    def _worker_loop(self, device: torch.device, worker_id: int):
+        """
+        Persistent worker thread that processes images on a specific GPU
+
+        Runs continuously until shutdown, eliminating thread creation overhead.
+        """
         model = self.models[device]
 
-        while True:
-            item = work_queue.get()
-            if item is None:  # Sentinel to stop worker
-                work_queue.task_done()
+        while not self._shutdown:
+            item = self.work_queue.get()
+
+            # Check for shutdown sentinel
+            if item is None:
+                self.work_queue.task_done()
                 break
 
-            img_path, image, img_tensor, metadata = item
+            # Unpack work item
+            img_path, image, img_tensor, metadata, use_tta = item
 
             try:
                 # Move tensor to this GPU
@@ -103,14 +123,14 @@ class MultiGPUInferenceEngine:
                     results_dict = {output_names[0]: results}
 
                 # Put result in queue
-                result_queue.put((img_path, image, results_dict, None))
+                self.result_queue.put((img_path, image, results_dict, None))
 
             except Exception as e:
                 logger.error(f"GPU {device} error processing {img_path.name}: {e}")
-                result_queue.put((img_path, image, None, str(e)))
+                self.result_queue.put((img_path, image, None, str(e)))
 
             finally:
-                work_queue.task_done()
+                self.work_queue.task_done()
 
     def process_images(
         self,
@@ -118,7 +138,7 @@ class MultiGPUInferenceEngine:
         use_tta: bool = False,
     ) -> list[tuple[Path, np.ndarray, dict[str, np.ndarray] | None, str | None]]:
         """
-        Process images in parallel across multiple GPUs
+        Process images in parallel across multiple GPUs using persistent workers
 
         Args:
             image_data: List of (img_path, image, img_tensor, metadata) tuples
@@ -130,43 +150,42 @@ class MultiGPUInferenceEngine:
         if not image_data:
             return []
 
-        # Create fresh queues for this batch
-        work_queue = Queue()
-        result_queue = Queue()
-
-        # Add all images to work queue
+        # Add all images to persistent work queue
         for img_path, image, img_tensor, metadata in image_data:
-            work_queue.put((img_path, image, img_tensor, metadata))
-
-        # Add sentinel values to stop workers (one per GPU)
-        for _ in self.devices:
-            work_queue.put(None)
-
-        # Start worker threads
-        workers = []
-        for i, device in enumerate(self.devices):
-            worker = threading.Thread(
-                target=self._worker,
-                args=(device, i, work_queue, result_queue, use_tta),
-                daemon=True,
-            )
-            worker.start()
-            workers.append(worker)
+            self.work_queue.put((img_path, image, img_tensor, metadata, use_tta))
 
         # Wait for all work to complete
-        work_queue.join()
+        self.work_queue.join()
 
         # Collect exact number of results (one per input image)
         num_images = len(image_data)
         results = []
         for _ in range(num_images):
-            results.append(result_queue.get())
-
-        # Wait for workers to finish
-        for worker in workers:
-            worker.join(timeout=1.0)
+            results.append(self.result_queue.get())
 
         return results
+
+    def shutdown(self):
+        """Shutdown persistent workers gracefully"""
+        if self._shutdown:
+            return
+
+        logger.info("Shutting down worker threads...")
+        self._shutdown = True
+
+        # Send shutdown sentinel to each worker
+        for _ in self.devices:
+            self.work_queue.put(None)
+
+        # Wait for workers to finish
+        for worker in self.workers:
+            worker.join(timeout=2.0)
+
+        logger.info("All workers shut down")
+
+    def __del__(self):
+        """Cleanup on deletion"""
+        self.shutdown()
 
     def get_device_for_preprocessing(self) -> torch.device:
         """Get device for preprocessing (use first GPU)"""

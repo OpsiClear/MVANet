@@ -5,11 +5,11 @@ requires = ["hatchling"]
 [project]
 dependencies = [
   "numpy>=1.21.6",
-  "torch>=1.9.0",
+  "torch>=2.8.0",
   "einops>=0.6.1",
   "Pillow>=9.5.0",
   "timm>=0.9.12",
-  "torchvision>=0.10.0",
+  "torchvision>=0.21.0",
   "opencv-python>=4.10.0.84",
   "mmdet>=2.17.0",
   "mmengine>=0.8.1",
@@ -26,6 +26,9 @@ dependencies = [
   "fastapi>=0.115.8",
   "uvicorn>=0.34.0",
   "ray>=2.47.1",
+  "tyro>=0.9.32",
+  "triton-windows>=3.2.0,<3.5; sys_platform == 'win32'",
+  "triton>=3.0.0; sys_platform == 'linux'",
 ]
 description = "Add your description here"
 name = "mvanet"

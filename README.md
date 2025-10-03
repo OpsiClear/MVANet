@@ -1,100 +1,126 @@
-# MVANet Image Segmentation API
+# MVANet Image Segmentation
 
-A FastAPI-based web service for image segmentation using the MVANet model.
+A modern web application for image segmentation using the MVANet deep learning model. Features a beautiful web dashboard and FastAPI-based backend for batch processing of images with real-time progress monitoring.
 
 ## Features
 
-- Process folders of images with the MVANet segmentation model
-- Generate segmentation masks and optional overlays
-- Track processing tasks with status updates
-- View system logs
-- Manage task history
-- GPU selection for inference
+### Web Dashboard
+- **Modern UI**: Clean, responsive interface with real-time updates
+- **Job Submission**: Easy folder path input for batch image processing
+- **Test-Time Augmentation**: Toggle TTA for improved segmentation accuracy
+- **Real-time Console**: Live processing logs with timestamps and color-coded messages
+- **Latest Image Viewer**: Preview the most recently processed image with overlays
+- **Task Persistence**: Processing continues across page refreshes - monitor from anywhere
+
+### Processing Capabilities
+- **Recursive Folder Processing**: Automatically finds and processes all 'images' folders
+- **Dual Output**: Generates both segmentation masks and overlays
+- **GPU Acceleration**: Supports CUDA for fast processing
+- **Background Processing**: Non-blocking job execution with task tracking
+- **Error Handling**: Comprehensive logging and error reporting
+
+### API Endpoints
+- Task submission and status tracking
+- Real-time log streaming
+- System status monitoring
+- Image serving and retrieval
 
 ## Installation
 
 1. Clone the repository:
    ```bash
-   git clone https://github.com/yourusername/MVANet.git
+   git clone https://github.com/OpsiClear/MVANet.git
    cd MVANet
    ```
 
-2. Install dependencies:
+2. Install dependencies using `uv` (recommended) or `pip`:
    ```bash
+   # Using uv (faster)
+   uv sync
+   
+   # Or using pip
    pip install -r requirements.txt
    ```
 
-3. Make sure you have the model file `Mvanet_complete.pth` in the project root directory.
+3. Ensure the model files are in the `models/` directory:
+   - `models/MVANet.pth` - Main segmentation model
+   - `models/swin_base_patch4_window12_384_22kto1k.pth` - Backbone model
 
 ## Usage
 
-### Starting the Server
+### Starting the Application
 
-The application can be started using the `run.py` script, which provides GPU selection functionality:
+Run the FastAPI server directly:
 
 ```bash
-python run.py --device auto
+python api_app.py
 ```
 
-Command-line options:
-- `--device`: Specify which device to use for inference (e.g., 'cuda:0', 'cpu', 'auto'). Default is 'auto'.
-- `--host`: Host to bind the server to (default: 0.0.0.0)
-- `--port`: Port to bind the server to (default: 8000)
-- `--reload`: Enable auto-reload for development
+The application will start on `http://localhost:8001` by default.
 
-Examples:
-```bash
-# Use the first GPU
-python run.py --device cuda:0
+### Web Interface
 
-# Use CPU only
-python run.py --device cpu
+1. Open your browser and navigate to `http://localhost:8001`
+2. Enter the full path to your input folder (must contain folders named 'images')
+3. Toggle Test-Time Augmentation if desired (improves accuracy but slower)
+4. Click "Submit Job" to start processing
+5. Monitor progress in real-time via the console output
+6. View the latest processed image using the "Latest Image" button
 
-# Automatically select the best available device
-python run.py --device auto
+**Input Folder Structure:**
+```
+your-input-folder/
+├── images/           # Must be named 'images'
+│   ├── image1.jpg
+│   ├── image2.png
+│   └── ...
+```
 
-# Run on a specific port
-python run.py --port 8080
+**Output Structure:**
+```
+your-input-folder_overlay/  # Segmentation overlays
+your-input-folder_masks/    # Binary masks
 ```
 
 ### API Endpoints
 
-#### Process a Folder
+#### Submit Processing Job
 ```bash
-curl -X POST "http://localhost:8000/api/process" \
+curl -X POST "http://localhost:8001/api/process" \
     -H "Content-Type: application/json" \
     -d '{
-        "input_folder": "/path/to/images",
-        "save_overlay": true,
-        "use_tta": true,
-        "device": "cuda:0",
-        "callback_url": "http://your-callback-url/webhook"
+        "input_folder": "/path/to/folder",
+        "use_tta": true
     }'
 ```
 
-#### Check Processing Status
+#### Check Task Status
 ```bash
-curl "http://localhost:8000/api/status/{request_id}"
+curl "http://localhost:8001/api/status/{request_id}"
 ```
 
-#### Get Device Information
+#### Get System Status
 ```bash
-curl "http://localhost:8000/api/device/info"
+curl "http://localhost:8001/api/system/status"
 ```
 
-#### Get Queue Length
+#### Get Task Logs
 ```bash
-curl "http://localhost:8000/api/queue/length"
+curl "http://localhost:8001/api/logs/{task_id}"
 ```
 
-#### Get System Logs
+#### Get Latest Processed Image
 ```bash
-curl "http://localhost:8000/api/logs?limit=100&level=INFO"
+curl "http://localhost:8001/api/latest-image"
 ```
 
-## Web Interface
+## Technology Stack
 
-The application also provides a web interface accessible at `http://localhost:8000/` for easy task management and monitoring.
+- **Backend**: FastAPI with async/await support
+- **Frontend**: Bootstrap 5 with vanilla JavaScript
+- **Deep Learning**: PyTorch with MVANet architecture
+- **Model Backbone**: Swin Transformer
+- **Image Processing**: PIL/Pillow, NumPy
 
 ## License
 

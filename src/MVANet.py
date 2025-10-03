@@ -81,9 +81,9 @@ class PositionEmbeddingSine:
         return torch.cat((pos_y, pos_x), dim=3).permute(0, 3, 1, 2) 
 
 
-class inf_MCLM(nn.Module):  
+class MCLM(nn.Module):  
     def __init__(self, d_model, num_heads, pool_ratios=[1, 4, 8]):
-        super(inf_MCLM, self).__init__()
+        super(MCLM, self).__init__()
         self.attention = nn.ModuleList([
             nn.MultiheadAttention(d_model, num_heads, dropout=0.1),
             nn.MultiheadAttention(d_model, num_heads, dropout=0.1),
@@ -96,6 +96,81 @@ class inf_MCLM(nn.Module):
         self.linear2 = nn.Linear(d_model * 2, d_model)
         self.linear3 = nn.Linear(d_model, d_model * 2)
         self.linear4 = nn.Linear(d_model * 2, d_model)
+        self.norm1 = nn.LayerNorm(d_model)
+        self.norm2 = nn.LayerNorm(d_model)
+        self.dropout = nn.Dropout(0.1)
+        self.dropout1 = nn.Dropout(0.1)
+        self.dropout2 = nn.Dropout(0.1)
+        self.activation = get_activation_fn('relu')
+        self.pool_ratios = pool_ratios
+        self.p_poses = []
+        self.g_pos = None
+        self.positional_encoding = PositionEmbeddingSine(num_pos_feats=d_model // 2, normalize=True)
+
+    def forward(self, l, g):
+        """
+        l: 4,c,h,w
+        g: 1,c,h,w
+        """
+        b, c, h, w = l.size() 
+        # 4,c,h,w -> 1,c,2h,2w
+        concated_locs = rearrange(l, '(hg wg b) c h w -> b c (hg h) (wg w)', hg=2, wg=2)
+        
+        pools = []
+        for pool_ratio in self.pool_ratios:
+             # b,c,h,w
+            tgt_hw = (round(h / pool_ratio), round(w / pool_ratio))
+            pool = F.adaptive_avg_pool2d(concated_locs, tgt_hw)
+            pools.append(rearrange(pool, 'b c h w -> (h w) b c'))
+            if self.g_pos is None:
+                pos_emb = self.positional_encoding(pool.shape[0], pool.shape[2], pool.shape[3])
+                pos_emb = rearrange(pos_emb, 'b c h w -> (h w) b c')
+                self.p_poses.append(pos_emb)
+        pools = torch.cat(pools, 0)
+        if self.g_pos is None:
+            self.p_poses = torch.cat(self.p_poses, dim=0)
+            pos_emb = self.positional_encoding(g.shape[0], g.shape[2], g.shape[3])
+            self.g_pos = rearrange(pos_emb, 'b c h w -> (h w) b c')
+
+        # attention between glb (q) & multisensory concated-locs (k,v)
+        g_hw_b_c = rearrange(g, 'b c h w -> (h w) b c')
+        g_hw_b_c = g_hw_b_c + self.dropout1(self.attention[0](g_hw_b_c + self.g_pos, pools + self.p_poses, pools)[0])
+        g_hw_b_c = self.norm1(g_hw_b_c)
+        g_hw_b_c = g_hw_b_c + self.dropout2(self.linear2(self.dropout(self.activation(self.linear1(g_hw_b_c)).clone())))
+        g_hw_b_c = self.norm2(g_hw_b_c)
+
+        # attention between origin locs (q) & freashed glb (k,v)
+        l_hw_b_c = rearrange(l, "b c h w -> (h w) b c")
+        _g_hw_b_c = rearrange(g_hw_b_c, '(h w) b c -> h w b c', h=h, w=w)
+        _g_hw_b_c = rearrange(_g_hw_b_c, "(ng h) (nw w) b c -> (h w) (ng nw b) c", ng=2, nw=2)
+        outputs_re = []
+        for i, (_l, _g) in enumerate(zip(l_hw_b_c.chunk(4, dim=1), _g_hw_b_c.chunk(4, dim=1))):
+            outputs_re.append(self.attention[i + 1](_l, _g, _g)[0])  # (h w) 1 c
+        outputs_re = torch.cat(outputs_re, 1)  # (h w) 4 c
+
+        l_hw_b_c = l_hw_b_c + self.dropout1(outputs_re)
+        l_hw_b_c = self.norm1(l_hw_b_c)
+        l_hw_b_c = l_hw_b_c + self.dropout2(self.linear4(self.dropout(self.activation(self.linear3(l_hw_b_c)).clone())))
+        l_hw_b_c = self.norm2(l_hw_b_c)  
+
+        l = torch.cat((l_hw_b_c, g_hw_b_c), 1)  # hw,b(5),c
+        return rearrange(l, "(h w) b c -> b c h w", h=h, w=w)  ## (5,c,h*w)
+
+
+class inf_MCLM(nn.Module):  
+    def __init__(self, d_model, num_heads, pool_ratios=[1, 4, 8]):
+        super(inf_MCLM, self).__init__()
+        self.attention = nn.ModuleList([
+            nn.MultiheadAttention(d_model, num_heads, dropout=0.1),
+            nn.MultiheadAttention(d_model, num_heads, dropout=0.1),
+            nn.MultiheadAttention(d_model, num_heads, dropout=0.1),
+            nn.MultiheadAttention(d_model, num_heads, dropout=0.1),
+            nn.MultiheadAttention(d_model, num_heads, dropout=0.1)
+        ])
+        self.linear3 = nn.Linear(d_model, d_model * 2)
+        self.linear4 = nn.Linear(d_model * 2, d_model)
+        self.linear5 = nn.Linear(d_model, d_model * 2)
+        self.linear6 = nn.Linear(d_model * 2, d_model)
         self.norm1 = nn.LayerNorm(d_model)
         self.norm2 = nn.LayerNorm(d_model)
         self.dropout = nn.Dropout(0.1)
@@ -136,7 +211,7 @@ class inf_MCLM(nn.Module):
         g_hw_b_c = rearrange(g, 'b c h w -> (h w) b c')
         g_hw_b_c = g_hw_b_c + self.dropout1(self.attention[0](g_hw_b_c + self.g_pos, pools + self.p_poses, pools)[0])
         g_hw_b_c = self.norm1(g_hw_b_c)
-        g_hw_b_c = g_hw_b_c + self.dropout2(self.linear2(self.dropout(self.activation(self.linear1(g_hw_b_c)).clone())))
+        g_hw_b_c = g_hw_b_c + self.dropout2(self.linear6(self.dropout(self.activation(self.linear5(g_hw_b_c)).clone())))
         g_hw_b_c = self.norm2(g_hw_b_c)
 
         # attention between origin locs (q) & freashed glb (k,v)
@@ -218,7 +293,7 @@ class inf_MCRM(nn.Module):
 class inf_MVANet(nn.Module):  
     def __init__(self):
         super().__init__()
-        self.backbone = SwinB(pretrained=True)
+        self.backbone = SwinB(pretrained=False)
 
         emb_dim = 128
         self.output5 = make_cbr(1024, emb_dim)

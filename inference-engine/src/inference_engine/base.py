@@ -16,12 +16,16 @@ class SegmentationModel(ABC):
         pass
 
     @abstractmethod
-    def preprocess(self, image: np.ndarray) -> tuple[torch.Tensor, dict]:
+    def preprocess(
+        self, image: np.ndarray, to_device: bool = True
+    ) -> tuple[torch.Tensor, dict]:
         """
         Preprocess image for inference
 
         Args:
             image: RGB numpy array (H, W, 3)
+            to_device: If True, move tensor to self.device. If False, keep in CPU pinned memory.
+                      Use False for multi-GPU mode to avoid GPU-to-GPU transfers.
 
         Returns:
             tuple: (preprocessed_tensor, metadata dict with 'original_size', etc.)

@@ -67,12 +67,15 @@ class TemplateModel(SegmentationModel):
             except Exception as e:
                 logger.warning(f"Could not set channels_last: {e}")
 
-    def preprocess(self, image: np.ndarray) -> tuple[torch.Tensor, dict]:
+    def preprocess(
+        self, image: np.ndarray, to_device: bool = True
+    ) -> tuple[torch.Tensor, dict]:
         """
         Preprocess image
 
         Args:
             image: RGB numpy array (H, W, 3) from OpenCV
+            to_device: If True, move to self.device. If False, keep in CPU pinned memory.
 
         Returns:
             (tensor, metadata dict)
@@ -89,12 +92,15 @@ class TemplateModel(SegmentationModel):
         # Convert to tensor: HWC -> CHW
         img_tensor = torch.from_numpy(img_normalized.transpose(2, 0, 1)).unsqueeze(0)
 
-        # GPU optimizations
-        if self.device.type == "cuda":
-            img_tensor = img_tensor.to(memory_format=torch.channels_last)
+        if to_device:
+            # Single GPU mode: move tensor to device
+            if self.device.type == "cuda":
+                img_tensor = img_tensor.to(memory_format=torch.channels_last)
+                img_tensor = img_tensor.pin_memory()
+            img_tensor = img_tensor.to(self.device, non_blocking=True)
+        else:
+            # Multi-GPU mode: keep in CPU pinned memory to avoid GPU-to-GPU transfers
             img_tensor = img_tensor.pin_memory()
-
-        img_tensor = img_tensor.to(self.device, non_blocking=True)
 
         return img_tensor, {"original_size": original_size}
 

@@ -106,8 +106,8 @@ class InferenceEngine:
         # Convert BGR to RGB for preprocessing
         image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
 
-        # Preprocess
-        img_tensor, metadata = self.model.preprocess(image_rgb)
+        # Preprocess (always to_device=True for single image inference)
+        img_tensor, metadata = self.model.preprocess(image_rgb, to_device=True)
 
         # Setup TTA if requested
         if use_tta and self.model.supports_tta:
@@ -421,7 +421,11 @@ class InferenceEngine:
 
         # Convert to RGB for model preprocessing
         image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-        img_tensor, metadata = self.model.preprocess(image_rgb)
+
+        # Multi-GPU mode: keep tensor in CPU pinned memory to avoid GPU-to-GPU transfers
+        # Single GPU mode: move tensor to device immediately
+        to_device = not (self.multi_gpu and self.multi_gpu_engine)
+        img_tensor, metadata = self.model.preprocess(image_rgb, to_device=to_device)
 
         return image, img_tensor, metadata
 

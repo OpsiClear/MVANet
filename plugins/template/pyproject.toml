@@ -1,0 +1,23 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "inference-engine-template"
+version = "1.0.0"
+description = "Template plugin for inference-engine - copy this to create your own"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "inference-engine>=0.1.0",
+    "torch>=2.8.0",
+    # Add your model-specific dependencies here
+]
+
+[project.entry-points."inference_engine.models"]
+# This registers your model with the inference engine
+# Format: model_name = "package_name:ClassName"
+template = "inference_engine_template:TemplateModel"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/inference_engine_template"]

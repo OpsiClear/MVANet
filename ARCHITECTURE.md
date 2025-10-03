@@ -86,18 +86,47 @@ result = engine.process_folder("input", "overlays", "masks")
 
 ## Creating New Plugins
 
-1. Create package structure:
-```
-my-model-plugin/
-├── src/inference_engine_mymodel/
-│   ├── __init__.py
-│   └── model.py  # Implements SegmentationModel
-└── pyproject.toml
+### Quick Start
+
+1. **Copy the template**:
+   ```bash
+   cp -r plugins/template plugins/your-model
+   ```
+
+2. **Customize your plugin**:
+   - Rename package: `inference_engine_template` → `inference_engine_yourmodel`
+   - Implement model in `model.py`
+   - Update `pyproject.toml` with entry point
+
+3. **Install and test**:
+   ```bash
+   pip install -e plugins/your-model
+   inference-engine list
+   ```
+
+### Required Implementation
+
+Your model class must inherit from `SegmentationModel` and implement:
+
+```python
+class YourModel(SegmentationModel):
+    def load(self, model_path: Path, device: torch.device) -> None
+    def preprocess(self, image: np.ndarray) -> tuple[torch.Tensor, dict]
+    def forward(self, tensor: torch.Tensor) -> torch.Tensor
+    def postprocess(self, output: torch.Tensor, metadata: dict) -> np.ndarray
+
+    @property
+    def name(self) -> str
+
+    @property
+    def supports_tta(self) -> bool
 ```
 
-2. Implement `SegmentationModel` interface
-3. Register entry point in `pyproject.toml`
-4. Install with `pip install -e .`
+### Documentation
+
+- **Detailed guide**: [inference-engine/PLUGIN_GUIDE.md](inference-engine/PLUGIN_GUIDE.md)
+- **Template plugin**: [plugins/template/](plugins/template/)
+- **Working example**: [plugins/mvanet/](plugins/mvanet/)
 
 ## Benefits
 
@@ -105,4 +134,5 @@ my-model-plugin/
 - **Extensible**: Add models without touching core code
 - **Installable**: Both packages pip-installable
 - **Discoverable**: Auto-discovers plugins via entry points
+- **Developer-friendly**: Template + comprehensive guide
 - **Clean**: Clear separation of concerns

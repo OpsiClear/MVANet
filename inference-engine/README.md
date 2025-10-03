@@ -62,11 +62,35 @@ result = engine.process_folder(
 
 ## Creating Plugins
 
-See plugin documentation in `plugins/` directory.
+**See [PLUGIN_GUIDE.md](PLUGIN_GUIDE.md) for detailed instructions.**
 
-Example plugin entry point in `pyproject.toml`:
+### Quick Example
 
+```python
+from inference_engine import SegmentationModel
+
+class MyModel(SegmentationModel):
+    def load(self, model_path, device): ...
+    def preprocess(self, image): ...  # RGB numpy -> tensor
+    def forward(self, tensor): ...
+    def postprocess(self, output, metadata): ...  # -> uint8 numpy
+
+    @property
+    def name(self) -> str: return "MyModel"
+
+    @property
+    def supports_tta(self) -> bool: return True
+```
+
+Register in `pyproject.toml`:
 ```toml
 [project.entry-points."inference_engine.models"]
-mvanet = "inference_engine_mvanet:MVANetModel"
+mymodel = "inference_engine_mymodel:MyModel"
+```
+
+Install and use:
+```bash
+pip install -e .
+inference-engine list  # Shows your model
+inference-engine infer --model mymodel --model-path weights.pth --input-folder images/
 ```

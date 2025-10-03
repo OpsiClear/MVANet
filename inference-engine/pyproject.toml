@@ -1,0 +1,26 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "inference-engine"
+version = "0.1.0"
+description = "Generic inference engine for segmentation models with plugin support"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "torch>=2.8.0",
+    "numpy>=1.21.6",
+    "opencv-python>=4.10.0",
+    "ttach>=0.0.3",
+    "tyro>=0.9.32",
+]
+
+[project.scripts]
+inference-engine = "inference_engine.cli:main"
+
+[project.entry-points."inference_engine.models"]
+# Plugins register here via their own pyproject.toml
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/inference_engine"]

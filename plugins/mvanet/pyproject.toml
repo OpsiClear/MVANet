@@ -1,0 +1,23 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "inference-engine-mvanet"
+version = "1.0.0"
+description = "MVANet model plugin for inference-engine"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "inference-engine>=0.1.0",
+    "torch>=2.8.0",
+    "torchvision>=0.21.0",
+    "einops>=0.6.1",
+    "timm>=0.9.12",
+]
+
+[project.entry-points."inference_engine.models"]
+mvanet = "inference_engine_mvanet:MVANetModel"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/inference_engine_mvanet"]

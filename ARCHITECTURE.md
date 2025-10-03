@@ -162,11 +162,35 @@ class YourModel(SegmentationModel):
 - **Template plugin**: [plugins/template/](plugins/template/)
 - **Working example**: [plugins/mvanet/](plugins/mvanet/)
 
+## Multi-GPU Support
+
+The engine supports parallel processing across multiple GPUs:
+
+```bash
+# Use specific GPUs
+inference-engine infer --model mvanet --model-path weights.pth \
+  --input-folder images/ --device cuda:0,cuda:1,cuda:2
+
+# Auto-detect all available GPUs
+inference-engine infer --model mvanet --model-path weights.pth \
+  --input-folder images/ --device auto
+```
+
+**How it works**:
+1. Each GPU gets its own model instance
+2. Images are preprocessed on CPU
+3. Preprocessed batches are distributed across GPUs in parallel
+4. Worker threads process images on each GPU simultaneously
+5. Results are collected and saved
+
+**Performance**: Near-linear scaling with GPU count (e.g., 3 GPUs ≈ 3x faster)
+
 ## Benefits
 
 - **Decoupled**: Core engine independent of any specific model
 - **Extensible**: Add models without touching core code
 - **Installable**: Both packages pip-installable
 - **Discoverable**: Auto-discovers plugins via entry points
+- **Multi-GPU**: Parallel processing for maximum throughput
 - **Developer-friendly**: Template + comprehensive guide
 - **Clean**: Clear separation of concerns

@@ -7,6 +7,7 @@ import torch
 import logging
 
 from . import InferenceEngine, list_models, create_model, get_model_info
+from .multi_gpu import parse_devices
 
 
 def infer(
@@ -25,6 +26,10 @@ def infer(
     Run inference on images
 
     Args:
+        device: Device(s) to use. Examples:
+                - "cuda:0" (single GPU)
+                - "cuda:0,cuda:1" (multi-GPU)
+                - "auto" (use all available GPUs)
         output: Output folders in format "type=path" (can be repeated)
                 Examples: --output mask=output/masks --output depth=output/depths
                 Default: mask and overlay in input_folder subfolders
@@ -34,13 +39,8 @@ def infer(
         format="%(asctime)s - %(levelname)s - %(message)s",
     )
 
-    device_obj = torch.device(device)
-
-    # Create model
-    logging.info(f"Loading model: {model}")
-    model_obj = create_model(model)
-    model_obj.load(model_path, device_obj)
-    model_obj.optimize_for_inference(device_obj)
+    # Parse devices
+    devices = parse_devices(device)
 
     # Parse output folders
     output_folders = {}
@@ -51,21 +51,61 @@ def infer(
                 return
             output_type, output_path = spec.split("=", 1)
             output_folders[output_type.strip()] = Path(output_path.strip())
-    else:
-        # Default output folders based on model's output types
-        output_names = model_obj.get_output_names()
-        for name in output_names:
-            output_folders[name] = input_folder / f"{name}s"
-        if create_overlays and "mask" in output_names:
-            output_folders["overlay"] = input_folder / "overlays"
 
-    # Create engine
-    engine = InferenceEngine(
-        model=model_obj,
-        device=device_obj,
-        use_fp16=use_fp16,
-        chunk_size=chunk_size,
-    )
+    # Multi-GPU mode
+    if len(devices) > 1:
+        logging.info(f"Multi-GPU mode: Using {len(devices)} GPUs")
+
+        # Model factory for multi-GPU
+        def model_factory(dev: torch.device):
+            m = create_model(model)
+            m.load(model_path, dev)
+            m.optimize_for_inference(dev)
+            return m
+
+        # Set default output folders if not specified
+        if not output:
+            # Need to create a temp model to get output names
+            temp_model = create_model(model)
+            output_names = temp_model.get_output_names()
+            for name in output_names:
+                output_folders[name] = input_folder / f"{name}s"
+            if create_overlays and "mask" in output_names:
+                output_folders["overlay"] = input_folder / "overlays"
+
+        # Create multi-GPU engine
+        engine = InferenceEngine(
+            devices=devices,
+            model_factory=model_factory,
+            use_fp16=use_fp16,
+            chunk_size=chunk_size,
+        )
+
+    # Single GPU mode
+    else:
+        device_obj = devices[0]
+        logging.info(f"Single GPU mode: Using {device_obj}")
+
+        # Create model
+        model_obj = create_model(model)
+        model_obj.load(model_path, device_obj)
+        model_obj.optimize_for_inference(device_obj)
+
+        # Set default output folders if not specified
+        if not output:
+            output_names = model_obj.get_output_names()
+            for name in output_names:
+                output_folders[name] = input_folder / f"{name}s"
+            if create_overlays and "mask" in output_names:
+                output_folders["overlay"] = input_folder / "overlays"
+
+        # Create single-GPU engine
+        engine = InferenceEngine(
+            model=model_obj,
+            device=device_obj,
+            use_fp16=use_fp16,
+            chunk_size=chunk_size,
+        )
 
     # Process
     logging.info(f"Processing: {input_folder}")

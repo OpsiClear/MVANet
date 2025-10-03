@@ -4,6 +4,7 @@ Generic Inference Engine for Segmentation Models
 Supports any model implementing the SegmentationModel interface.
 Uses OpenCV for fast image I/O.
 Supports multiple outputs (masks, depth maps, normal maps, etc.)
+Supports multi-GPU inference for parallel processing.
 """
 
 import torch
@@ -16,8 +17,10 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import ttach as tta
 import time
 import os
+from typing import Callable
 
 from .base import SegmentationModel
+from .multi_gpu import MultiGPUInferenceEngine
 
 # Configuration
 NUM_WORKERS = min(8, os.cpu_count() or 1)
@@ -32,24 +35,57 @@ class InferenceEngine:
 
     def __init__(
         self,
-        model: SegmentationModel,
-        device: torch.device,
+        model: SegmentationModel | None = None,
+        device: torch.device | None = None,
+        devices: list[torch.device] | None = None,
+        model_factory: Callable[[torch.device], SegmentationModel] | None = None,
         use_fp16: bool = True,
         chunk_size: int = 20,
     ):
         """
         Initialize inference engine
 
-        Args:
-            model: Segmentation model implementing SegmentationModel interface
+        Single GPU mode:
+            model: SegmentationModel instance
             device: torch device
+
+        Multi-GPU mode:
+            devices: List of torch devices
+            model_factory: Function that creates model for each device
+
+        Args:
+            model: Segmentation model (single GPU)
+            device: torch device (single GPU)
+            devices: List of devices (multi-GPU)
+            model_factory: Factory function for multi-GPU
             use_fp16: Use FP16 mixed precision
             chunk_size: Number of images to process per chunk
         """
-        self.model = model
-        self.device = device
         self.use_fp16 = use_fp16
         self.chunk_size = chunk_size
+
+        # Multi-GPU mode
+        if devices and len(devices) > 1:
+            if not model_factory:
+                raise ValueError("model_factory required for multi-GPU mode")
+            self.multi_gpu = True
+            self.devices = devices
+            self.device = devices[0]  # Primary device for preprocessing
+            self.multi_gpu_engine = MultiGPUInferenceEngine(
+                model_factory, devices, use_fp16
+            )
+            self.model = self.multi_gpu_engine.models[self.device]
+            logger.info(f"Multi-GPU mode: Using {len(devices)} GPUs")
+        # Single GPU mode
+        else:
+            if not model or not device:
+                raise ValueError("model and device required for single GPU mode")
+            self.multi_gpu = False
+            self.model = model
+            self.device = device
+            self.devices = [device]
+            self.multi_gpu_engine = None
+            logger.info(f"Single GPU mode: Using {device}")
 
     def infer_image(
         self, image: np.ndarray, use_tta: bool = False
@@ -219,51 +255,37 @@ class InferenceEngine:
         for i in range(0, len(files_to_process), self.chunk_size):
             chunk = files_to_process[i : i + self.chunk_size]
 
-            with ThreadPoolExecutor(max_workers=NUM_WORKERS) as executor:
-                # Preprocess in parallel
-                preprocess_futures = {
-                    executor.submit(self._load_and_preprocess, img_path): img_path
-                    for img_path in chunk
-                }
+            # Multi-GPU mode: Parallel GPU processing
+            if self.multi_gpu and self.multi_gpu_engine:
+                with ThreadPoolExecutor(max_workers=NUM_WORKERS) as executor:
+                    # Preprocess in parallel
+                    preprocess_futures = {
+                        executor.submit(self._load_and_preprocess, img_path): img_path
+                        for img_path in chunk
+                    }
 
-                save_futures = []
+                    # Collect preprocessed data
+                    image_data = []
+                    for future in as_completed(preprocess_futures):
+                        try:
+                            image, img_tensor, metadata = future.result()
+                            img_path = preprocess_futures[future]
+                            image_data.append((img_path, image, img_tensor, metadata))
+                        except Exception as e:
+                            img_path = preprocess_futures[future]
+                            logger.error(f"Error preprocessing {img_path.name}: {e}")
 
-                for future in as_completed(preprocess_futures):
-                    img_path = preprocess_futures[future]
-                    try:
-                        image, img_tensor, metadata = future.result()
+                # Process batch on multiple GPUs in parallel
+                gpu_results = self.multi_gpu_engine.process_images(image_data, use_tta)
 
-                        # GPU inference
-                        autocast_dtype = torch.float16 if self.use_fp16 else torch.float32
-                        with autocast(
-                            enabled=True, device_type="cuda", dtype=autocast_dtype
-                        ):
-                            if use_tta and self.model.supports_tta:
-                                tta_wrapper = tta.Compose([tta.HorizontalFlip()])
-                                tta_model = tta.SegmentationTTAWrapper(
-                                    lambda x: self.model.forward(x), tta_wrapper
-                                )
-                                output = tta_model(img_tensor)
-                            else:
-                                output = self.model.forward(img_tensor)
+                # Save results
+                with ThreadPoolExecutor(max_workers=NUM_WORKERS) as executor:
+                    save_futures = []
+                    for img_path, image, results_dict, error in gpu_results:
+                        if error:
+                            logger.error(f"GPU processing error for {img_path.name}: {error}")
+                            continue
 
-                        # Postprocess
-                        if isinstance(output, dict):
-                            output_float = {k: v.float() for k, v in output.items()}
-                        else:
-                            output_float = output.float()
-
-                        results = self.model.postprocess(output_float, metadata)
-
-                        # Normalize results to dict
-                        if isinstance(results, dict):
-                            results_dict = results
-                        else:
-                            # Single output - use first output name from model
-                            output_names = self.model.get_output_names()
-                            results_dict = {output_names[0]: results}
-
-                        # Submit save task
                         save_futures.append(
                             executor.submit(
                                 self._save_outputs,
@@ -274,25 +296,97 @@ class InferenceEngine:
                                 create_overlays,
                             )
                         )
-
                         processed_count += 1
 
-                        # Progress logging
-                        if files_to_process_count > 20 and processed_count % 10 == 0:
-                            logger.info(
-                                f"Progress: {processed_count}/{files_to_process_count} images processed"
+                    # Wait for saves
+                    for future in save_futures:
+                        try:
+                            future.result()
+                        except Exception as e:
+                            logger.error(f"Error during save operation: {e}")
+
+                # Progress logging
+                if files_to_process_count > 20 and processed_count % (self.chunk_size * len(self.devices)) == 0:
+                    logger.info(
+                        f"Progress: {processed_count}/{files_to_process_count} images processed"
+                    )
+
+            # Single GPU mode: Sequential processing
+            else:
+                with ThreadPoolExecutor(max_workers=NUM_WORKERS) as executor:
+                    # Preprocess in parallel
+                    preprocess_futures = {
+                        executor.submit(self._load_and_preprocess, img_path): img_path
+                        for img_path in chunk
+                    }
+
+                    save_futures = []
+
+                    for future in as_completed(preprocess_futures):
+                        img_path = preprocess_futures[future]
+                        try:
+                            image, img_tensor, metadata = future.result()
+
+                            # GPU inference
+                            autocast_dtype = torch.float16 if self.use_fp16 else torch.float32
+                            with autocast(
+                                enabled=True, device_type="cuda", dtype=autocast_dtype
+                            ):
+                                if use_tta and self.model.supports_tta:
+                                    tta_wrapper = tta.Compose([tta.HorizontalFlip()])
+                                    tta_model = tta.SegmentationTTAWrapper(
+                                        lambda x: self.model.forward(x), tta_wrapper
+                                    )
+                                    output = tta_model(img_tensor)
+                                else:
+                                    output = self.model.forward(img_tensor)
+
+                            # Postprocess
+                            if isinstance(output, dict):
+                                output_float = {k: v.float() for k, v in output.items()}
+                            else:
+                                output_float = output.float()
+
+                            results = self.model.postprocess(output_float, metadata)
+
+                            # Normalize results to dict
+                            if isinstance(results, dict):
+                                results_dict = results
+                            else:
+                                # Single output - use first output name from model
+                                output_names = self.model.get_output_names()
+                                results_dict = {output_names[0]: results}
+
+                            # Submit save task
+                            save_futures.append(
+                                executor.submit(
+                                    self._save_outputs,
+                                    results_dict,
+                                    image,
+                                    img_path,
+                                    output_folders,
+                                    create_overlays,
+                                )
                             )
 
-                    except Exception as e:
-                        logger.error(f"Error processing {img_path.name}: {e}")
-                        continue
+                            processed_count += 1
 
-                # Wait for saves
-                for future in save_futures:
-                    try:
-                        future.result()
-                    except Exception as e:
-                        logger.error(f"Error during save operation: {e}")
+                            # Progress logging
+                            if files_to_process_count > 20 and processed_count % 10 == 0:
+                                logger.info(
+                                    f"Progress: {processed_count}/{files_to_process_count} images processed"
+                                )
+
+                        except Exception as e:
+                            logger.error(f"Error processing {img_path.name}: {e}")
+                            continue
+
+                    # Wait for saves
+                    for future in save_futures:
+                        try:
+                            future.result()
+                        except Exception as e:
+                            logger.error(f"Error during save operation: {e}")
 
             # Clear CUDA cache after each chunk
             if torch.cuda.is_available():

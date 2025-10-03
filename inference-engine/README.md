@@ -6,6 +6,7 @@ Generic inference engine for segmentation models with plugin architecture.
 
 - **Model-agnostic**: Works with any segmentation model via plugin system
 - **Multi-output support**: Models can output masks, depth maps, normal maps, etc.
+- **Multi-GPU support**: Parallel processing across multiple GPUs
 - **Fast**: Optimized with FP16, channels_last, chunked processing
 - **Extensible**: Easy plugin system via entry points
 - **CLI**: Simple command-line interface
@@ -33,12 +34,26 @@ inference-engine info --model mvanet
 
 Run inference:
 ```bash
-# Single output model (default folders)
+# Single GPU
 inference-engine infer \
   --model mvanet \
   --model-path models/MVANet.pth \
   --input-folder /path/to/images \
   --device cuda:0
+
+# Multi-GPU (parallel processing)
+inference-engine infer \
+  --model mvanet \
+  --model-path models/MVANet.pth \
+  --input-folder /path/to/images \
+  --device cuda:0,cuda:1,cuda:2
+
+# Auto-detect all GPUs
+inference-engine infer \
+  --model mvanet \
+  --model-path models/MVANet.pth \
+  --input-folder /path/to/images \
+  --device auto
 
 # Multi-output model (custom folders)
 inference-engine infer \
@@ -52,8 +67,10 @@ inference-engine infer \
 
 ### Python API
 
+**Single GPU**:
 ```python
 from inference_engine import InferenceEngine, create_model
+from pathlib import Path
 import torch
 
 # Create model
@@ -61,13 +78,37 @@ model = create_model("mvanet")
 model.load("models/MVANet.pth", torch.device("cuda:0"))
 
 # Create engine
-engine = InferenceEngine(model, device=torch.device("cuda:0"))
+engine = InferenceEngine(model=model, device=torch.device("cuda:0"))
 
 # Process folder
 result = engine.process_folder(
-    folder_path="input/images",
-    overlay_folder="output/overlays",
-    mask_folder="output/masks"
+    folder_path=Path("input/images"),
+    output_folders={"mask": Path("output/masks"), "overlay": Path("output/overlays")}
+)
+```
+
+**Multi-GPU**:
+```python
+from inference_engine import InferenceEngine, create_model, parse_devices
+from pathlib import Path
+
+# Parse devices
+devices = parse_devices("cuda:0,cuda:1,cuda:2")  # or "auto"
+
+# Model factory creates instances for each GPU
+def model_factory(device):
+    model = create_model("mvanet")
+    model.load("models/MVANet.pth", device)
+    model.optimize_for_inference(device)
+    return model
+
+# Create multi-GPU engine
+engine = InferenceEngine(devices=devices, model_factory=model_factory)
+
+# Process folder (distributed across GPUs)
+result = engine.process_folder(
+    folder_path=Path("input/images"),
+    output_folders={"mask": Path("output/masks"), "overlay": Path("output/overlays")}
 )
 ```
 

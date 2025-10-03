@@ -13,15 +13,22 @@ def infer(
     input_folder: Path,
     model: str,
     model_path: Path,
-    output_overlay: Path | None = None,
-    output_mask: Path | None = None,
+    output: list[str] | None = None,
     device: str = "cuda:0",
     use_fp16: bool = True,
     use_tta: bool = False,
     chunk_size: int = 20,
+    create_overlays: bool = True,
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO",
 ):
-    """Run inference on images"""
+    """
+    Run inference on images
+
+    Args:
+        output: Output folders in format "type=path" (can be repeated)
+                Examples: --output mask=output/masks --output depth=output/depths
+                Default: mask and overlay in input_folder subfolders
+    """
     logging.basicConfig(
         level=getattr(logging, log_level),
         format="%(asctime)s - %(levelname)s - %(message)s",
@@ -35,6 +42,23 @@ def infer(
     model_obj.load(model_path, device_obj)
     model_obj.optimize_for_inference(device_obj)
 
+    # Parse output folders
+    output_folders = {}
+    if output:
+        for spec in output:
+            if "=" not in spec:
+                logging.error(f"Invalid output spec: {spec}. Use format: type=path")
+                return
+            output_type, output_path = spec.split("=", 1)
+            output_folders[output_type.strip()] = Path(output_path.strip())
+    else:
+        # Default output folders based on model's output types
+        output_names = model_obj.get_output_names()
+        for name in output_names:
+            output_folders[name] = input_folder / f"{name}s"
+        if create_overlays and "mask" in output_names:
+            output_folders["overlay"] = input_folder / "overlays"
+
     # Create engine
     engine = InferenceEngine(
         model=model_obj,
@@ -43,17 +67,15 @@ def infer(
         chunk_size=chunk_size,
     )
 
-    # Determine output paths
-    overlay_folder = output_overlay or input_folder / "overlays"
-    mask_folder = output_mask or input_folder / "masks"
-
     # Process
     logging.info(f"Processing: {input_folder}")
+    logging.info(f"Outputs: {', '.join(f'{k}={v}' for k, v in output_folders.items())}")
+
     result = engine.process_folder(
         folder_path=input_folder,
-        overlay_folder=overlay_folder,
-        mask_folder=mask_folder,
+        output_folders=output_folders,
         use_tta=use_tta,
+        create_overlays=create_overlays,
     )
 
     logging.info(f"Results: {result}")

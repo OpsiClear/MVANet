@@ -5,6 +5,7 @@ Generic inference engine for segmentation models with plugin architecture.
 ## Features
 
 - **Model-agnostic**: Works with any segmentation model via plugin system
+- **Multi-output support**: Models can output masks, depth maps, normal maps, etc.
 - **Fast**: Optimized with FP16, channels_last, chunked processing
 - **Extensible**: Easy plugin system via entry points
 - **CLI**: Simple command-line interface
@@ -32,11 +33,21 @@ inference-engine info --model mvanet
 
 Run inference:
 ```bash
+# Single output model (default folders)
 inference-engine infer \
   --model mvanet \
   --model-path models/MVANet.pth \
   --input-folder /path/to/images \
   --device cuda:0
+
+# Multi-output model (custom folders)
+inference-engine infer \
+  --model mymodel \
+  --model-path weights.pth \
+  --input-folder /path/to/images \
+  --output mask=output/masks \
+  --output depth=output/depths \
+  --output overlay=output/overlays
 ```
 
 ### Python API

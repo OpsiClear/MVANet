@@ -310,6 +310,87 @@ class U2NetModel(SegmentationModel):
         }
 ```
 
+## Multi-Output Models
+
+Models that produce multiple outputs (masks, depth, normals, etc.) should:
+
+### 1. Override get_output_names()
+
+```python
+def get_output_names(self) -> list[str]:
+    return ["mask", "depth", "normal"]
+```
+
+### 2. Return dict from postprocess()
+
+```python
+def postprocess(
+    self, output: dict[str, torch.Tensor], metadata: dict
+) -> dict[str, np.ndarray]:
+    original_size = metadata["original_size"]
+    results = {}
+
+    # Process mask
+    mask_tensor = torch.sigmoid(output["mask"])
+    mask_resized = F.interpolate(mask_tensor, size=(original_size[1], original_size[0]), mode="bilinear")
+    results["mask"] = (mask_resized.squeeze() * 255).cpu().numpy().astype(np.uint8)
+
+    # Process depth
+    depth_resized = F.interpolate(output["depth"], size=(original_size[1], original_size[0]), mode="bilinear")
+    depth_np = depth_resized.squeeze().cpu().numpy()
+    depth_np = ((depth_np - depth_np.min()) / (depth_np.max() - depth_np.min() + 1e-8) * 255)
+    results["depth"] = depth_np.astype(np.uint8)
+
+    # Process normal map (RGB)
+    normal_resized = F.interpolate(output["normal"], size=(original_size[1], original_size[0]), mode="bilinear")
+    normal_np = normal_resized.squeeze(0).permute(1, 2, 0).cpu().numpy()
+    results["normal"] = ((normal_np + 1) / 2 * 255).astype(np.uint8)
+
+    return results
+```
+
+### 3. Usage
+
+```bash
+# CLI automatically creates folders for each output
+inference-engine infer \
+  --model mymodel \
+  --model-path weights.pth \
+  --input-folder images/
+
+# Or specify custom output folders
+inference-engine infer \
+  --model mymodel \
+  --model-path weights.pth \
+  --input-folder images/ \
+  --output mask=output/masks \
+  --output depth=output/depths \
+  --output normal=output/normals \
+  --output overlay=output/overlays
+```
+
+### 4. Python API
+
+```python
+from inference_engine import InferenceEngine, create_model
+from pathlib import Path
+
+model = create_model("mymodel")
+model.load("weights.pth", device)
+
+engine = InferenceEngine(model, device)
+result = engine.process_folder(
+    folder_path=Path("images"),
+    output_folders={
+        "mask": Path("output/masks"),
+        "depth": Path("output/depths"),
+        "normal": Path("output/normals"),
+        "overlay": Path("output/overlays"),
+    },
+    create_overlays=True,  # Creates RGBA overlay from mask
+)
+```
+
 ## Best Practices
 
 1. **Memory Management**: Use `torch.no_grad()`, clear cache when needed
@@ -318,6 +399,7 @@ class U2NetModel(SegmentationModel):
 4. **Metadata**: Provide accurate model information
 5. **Documentation**: Document preprocessing/postprocessing details
 6. **Testing**: Test with various image sizes and formats
+7. **Multi-Output**: Use consistent naming (mask, depth, normal, etc.)
 
 ## Publishing
 

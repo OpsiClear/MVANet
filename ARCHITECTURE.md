@@ -65,6 +65,8 @@ inference-engine list
 ```
 
 ### Run Inference
+
+**Single output (mask only)**:
 ```bash
 inference-engine infer \
   --model mvanet \
@@ -72,16 +74,48 @@ inference-engine infer \
   --input-folder /path/to/images
 ```
 
+**Multi-output (mask, depth, normal, etc.)**:
+```bash
+inference-engine infer \
+  --model mymodel \
+  --model-path weights.pth \
+  --input-folder /path/to/images \
+  --output mask=output/masks \
+  --output depth=output/depths \
+  --output normal=output/normals \
+  --output overlay=output/overlays
+```
+
 ### Python API
+
+**Single output**:
 ```python
 from inference_engine import InferenceEngine, create_model
+from pathlib import Path
 import torch
 
 model = create_model("mvanet")
 model.load("models/MVANet.pth", torch.device("cuda:0"))
 
 engine = InferenceEngine(model, device=torch.device("cuda:0"))
-result = engine.process_folder("input", "overlays", "masks")
+result = engine.process_folder(
+    folder_path=Path("input"),
+    output_folders={"mask": Path("masks"), "overlay": Path("overlays")}
+)
+```
+
+**Multi-output**:
+```python
+result = engine.process_folder(
+    folder_path=Path("input"),
+    output_folders={
+        "mask": Path("output/masks"),
+        "depth": Path("output/depths"),
+        "normal": Path("output/normals"),
+        "overlay": Path("output/overlays"),
+    },
+    create_overlays=True,
+)
 ```
 
 ## Creating New Plugins

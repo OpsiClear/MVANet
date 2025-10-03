@@ -4,7 +4,7 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any
 import torch
-from PIL import Image
+import numpy as np
 
 
 class SegmentationModel(ABC):
@@ -16,9 +16,12 @@ class SegmentationModel(ABC):
         pass
 
     @abstractmethod
-    def preprocess(self, image: Image.Image) -> tuple[torch.Tensor, dict]:
+    def preprocess(self, image: np.ndarray) -> tuple[torch.Tensor, dict]:
         """
         Preprocess image for inference
+
+        Args:
+            image: RGB numpy array (H, W, 3)
 
         Returns:
             tuple: (preprocessed_tensor, metadata dict with 'original_size', etc.)
@@ -26,21 +29,29 @@ class SegmentationModel(ABC):
         pass
 
     @abstractmethod
-    def forward(self, tensor: torch.Tensor) -> torch.Tensor:
-        """Run model forward pass"""
+    def forward(self, tensor: torch.Tensor) -> torch.Tensor | dict[str, torch.Tensor]:
+        """
+        Run model forward pass
+
+        Returns:
+            Single tensor or dict of named tensors for multi-output models
+        """
         pass
 
     @abstractmethod
-    def postprocess(self, output: torch.Tensor, metadata: dict) -> Image.Image:
+    def postprocess(
+        self, output: torch.Tensor | dict[str, torch.Tensor], metadata: dict
+    ) -> np.ndarray | dict[str, np.ndarray]:
         """
-        Postprocess model output to mask image
+        Postprocess model output to image(s)
 
         Args:
-            output: Raw model output tensor
+            output: Raw model output (single tensor or dict of tensors)
             metadata: Metadata from preprocess (contains original_size, etc.)
 
         Returns:
-            PIL Image mask
+            Single numpy array or dict of named numpy arrays
+            All arrays should be (H, W) grayscale uint8 or (H, W, 3) RGB uint8
         """
         pass
 
@@ -55,6 +66,16 @@ class SegmentationModel(ABC):
     def supports_tta(self) -> bool:
         """Whether model supports test-time augmentation"""
         pass
+
+    def get_output_names(self) -> list[str]:
+        """
+        Return list of output names this model produces
+
+        Returns:
+            List of output names (e.g., ["mask", "depth", "normal"])
+            Default: ["mask"] for single-output models
+        """
+        return ["mask"]
 
     def optimize_for_inference(self, device: torch.device) -> None:
         """Optional: Apply inference optimizations (channels_last, etc.)"""

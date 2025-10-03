@@ -126,6 +126,10 @@ class MVANetModel(SegmentationModel):
     def supports_tta(self) -> bool:
         return True
 
+    def get_output_names(self) -> list[str]:
+        """Return list of outputs this model produces"""
+        return ["mask"]
+
     @classmethod
     def get_metadata(cls) -> dict:
         return {

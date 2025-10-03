@@ -114,33 +114,99 @@ class TemplateModel(SegmentationModel):
         with torch.no_grad():
             return self.model(tensor)
 
-    def postprocess(self, output: torch.Tensor, metadata: dict) -> np.ndarray:
+    def postprocess(
+        self, output: torch.Tensor | dict[str, torch.Tensor], metadata: dict
+    ) -> np.ndarray | dict[str, np.ndarray]:
         """
-        Postprocess model output to mask
+        Postprocess model output to mask(s)
+
+        SINGLE OUTPUT MODEL:
+            Return single numpy array for models with one output
+
+        MULTI-OUTPUT MODEL:
+            Return dict of numpy arrays for models with multiple outputs
+            (e.g., {"mask": mask_array, "depth": depth_array})
 
         Args:
-            output: Raw model output tensor
+            output: Raw model output (single tensor or dict of tensors)
             metadata: Contains 'original_size' (width, height)
 
         Returns:
-            Grayscale mask (H, W) as uint8 numpy array
+            Single array or dict of arrays (all uint8, H x W or H x W x 3)
         """
         original_size = metadata["original_size"]
 
-        # Apply activation (adjust based on your model)
-        mask_tensor = torch.sigmoid(output)  # or torch.softmax, etc.
+        # EXAMPLE 1: Single output (default)
+        if isinstance(output, torch.Tensor):
+            # Apply activation
+            mask_tensor = torch.sigmoid(output)
 
-        # Resize to original dimensions
-        mask_resized = F.interpolate(
-            mask_tensor,
-            size=(original_size[1], original_size[0]),  # (height, width)
-            mode="bilinear",
-            align_corners=False
-        )
+            # Resize
+            mask_resized = F.interpolate(
+                mask_tensor,
+                size=(original_size[1], original_size[0]),
+                mode="bilinear",
+                align_corners=False,
+            )
 
-        # Convert to uint8 numpy array
-        mask_np = (mask_resized.squeeze() * 255).cpu().numpy().astype(np.uint8)
-        return mask_np
+            # Convert to uint8
+            mask_np = (mask_resized.squeeze() * 255).cpu().numpy().astype(np.uint8)
+            return mask_np
+
+        # EXAMPLE 2: Multi-output model
+        # Uncomment and modify for multi-output models:
+        #
+        # elif isinstance(output, dict):
+        #     results = {}
+        #
+        #     # Process mask output
+        #     if "mask" in output:
+        #         mask_tensor = torch.sigmoid(output["mask"])
+        #         mask_resized = F.interpolate(
+        #             mask_tensor,
+        #             size=(original_size[1], original_size[0]),
+        #             mode="bilinear",
+        #             align_corners=False,
+        #         )
+        #         results["mask"] = (
+        #             (mask_resized.squeeze() * 255).cpu().numpy().astype(np.uint8)
+        #         )
+        #
+        #     # Process depth output
+        #     if "depth" in output:
+        #         depth_tensor = output["depth"]
+        #         depth_resized = F.interpolate(
+        #             depth_tensor,
+        #             size=(original_size[1], original_size[0]),
+        #             mode="bilinear",
+        #             align_corners=False,
+        #         )
+        #         # Normalize depth to 0-255
+        #         depth_np = depth_resized.squeeze().cpu().numpy()
+        #         depth_np = (
+        #             (depth_np - depth_np.min())
+        #             / (depth_np.max() - depth_np.min() + 1e-8)
+        #             * 255
+        #         )
+        #         results["depth"] = depth_np.astype(np.uint8)
+        #
+        #     # Process normal map output
+        #     if "normal" in output:
+        #         normal_tensor = output["normal"]  # Assume (B, 3, H, W)
+        #         normal_resized = F.interpolate(
+        #             normal_tensor,
+        #             size=(original_size[1], original_size[0]),
+        #             mode="bilinear",
+        #             align_corners=False,
+        #         )
+        #         # Convert to RGB uint8 (H, W, 3)
+        #         normal_np = normal_resized.squeeze(0).permute(1, 2, 0).cpu().numpy()
+        #         normal_np = ((normal_np + 1) / 2 * 255).astype(np.uint8)
+        #         results["normal"] = normal_np
+        #
+        #     return results
+
+        raise NotImplementedError("Unsupported output type")
 
     @property
     def name(self) -> str:
@@ -151,6 +217,18 @@ class TemplateModel(SegmentationModel):
     def supports_tta(self) -> bool:
         """Whether model supports test-time augmentation"""
         return True
+
+    def get_output_names(self) -> list[str]:
+        """
+        Return list of output names
+
+        For single output models: ["mask"]
+        For multi-output models: ["mask", "depth", "normal", ...]
+
+        Returns:
+            List of output names
+        """
+        return ["mask"]  # Change to ["mask", "depth", "normal"] for multi-output
 
     @classmethod
     def get_metadata(cls) -> dict:

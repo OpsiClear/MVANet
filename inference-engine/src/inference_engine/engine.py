@@ -3,6 +3,7 @@ Generic Inference Engine for Segmentation Models
 
 Supports any model implementing the SegmentationModel interface.
 Uses OpenCV for fast image I/O.
+Supports multiple outputs (masks, depth maps, normal maps, etc.)
 """
 
 import torch
@@ -50,7 +51,9 @@ class InferenceEngine:
         self.use_fp16 = use_fp16
         self.chunk_size = chunk_size
 
-    def infer_image(self, image: np.ndarray, use_tta: bool = False) -> np.ndarray:
+    def infer_image(
+        self, image: np.ndarray, use_tta: bool = False
+    ) -> np.ndarray | dict[str, np.ndarray]:
         """
         Run inference on a single image
 
@@ -59,7 +62,7 @@ class InferenceEngine:
             use_tta: Use test-time augmentation
 
         Returns:
-            Mask as numpy array (grayscale)
+            Single mask or dict of outputs
         """
         # Convert BGR to RGB for preprocessing
         image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
@@ -84,30 +87,48 @@ class InferenceEngine:
                 with autocast(enabled=True, device_type="cuda", dtype=autocast_dtype):
                     output = self.model.forward(img_tensor)
 
-        # Postprocess
-        mask = self.model.postprocess(output.float(), metadata)
-        return mask
+        # Postprocess (handle dict or single tensor)
+        if isinstance(output, dict):
+            output_float = {k: v.float() for k, v in output.items()}
+        else:
+            output_float = output.float()
+
+        result = self.model.postprocess(output_float, metadata)
+        return result
 
     def process_folder(
         self,
         folder_path: Path,
-        overlay_folder: Path,
-        mask_folder: Path,
+        output_folders: dict[str, Path] | None = None,
+        overlay_folder: Path | None = None,
+        mask_folder: Path | None = None,
         use_tta: bool = False,
+        create_overlays: bool = True,
     ) -> dict:
         """
         Process all images in a folder
 
         Args:
             folder_path: Input folder path
-            overlay_folder: Output folder for overlays
-            mask_folder: Output folder for masks
+            output_folders: Dict mapping output names to folder paths
+                          e.g., {"mask": Path("masks"), "depth": Path("depths")}
+            overlay_folder: (Deprecated) Use output_folders with "overlay" key
+            mask_folder: (Deprecated) Use output_folders with "mask" key
             use_tta: Use test-time augmentation
+            create_overlays: Create RGBA overlays for mask outputs
 
         Returns:
             dict with processing statistics
         """
         start_time = time.time()
+
+        # Handle backward compatibility
+        if output_folders is None:
+            output_folders = {}
+            if mask_folder:
+                output_folders["mask"] = mask_folder
+            if overlay_folder:
+                output_folders["overlay"] = overlay_folder
 
         if not folder_path.is_dir():
             raise ValueError(f"Folder {folder_path} does not exist")
@@ -151,19 +172,28 @@ class InferenceEngine:
             return {"processed": 0, "skipped": keyword_skipped_count, "total": 0}
 
         # Create output folders
-        overlay_folder.mkdir(exist_ok=True, parents=True)
-        mask_folder.mkdir(exist_ok=True, parents=True)
+        for folder in output_folders.values():
+            folder.mkdir(exist_ok=True, parents=True)
 
-        # Check which files need processing
+        # Check which files need processing (based on first output)
         files_to_process = []
         skipped_count = 0
+        first_output_key = list(output_folders.keys())[0] if output_folders else None
+
+        if first_output_key and first_output_key != "overlay":
+            check_folder = output_folders[first_output_key]
+        elif "mask" in output_folders:
+            check_folder = output_folders["mask"]
+        else:
+            check_folder = list(output_folders.values())[0] if output_folders else None
 
         for img_path in image_files:
-            overlay_path = overlay_folder / (img_path.stem + ".png")
-            if overlay_path.exists():
-                skipped_count += 1
-            else:
-                files_to_process.append(img_path)
+            if check_folder:
+                output_path = check_folder / (img_path.stem + ".png")
+                if output_path.exists():
+                    skipped_count += 1
+                    continue
+            files_to_process.append(img_path)
 
         # Log processing summary
         total_files = len(image_files)
@@ -218,16 +248,30 @@ class InferenceEngine:
                                 output = self.model.forward(img_tensor)
 
                         # Postprocess
-                        mask = self.model.postprocess(output.float(), metadata)
+                        if isinstance(output, dict):
+                            output_float = {k: v.float() for k, v in output.items()}
+                        else:
+                            output_float = output.float()
 
-                        # Save paths
-                        overlay_path = overlay_folder / (img_path.stem + ".png")
-                        mask_path = mask_folder / (img_path.name + ".png")
+                        results = self.model.postprocess(output_float, metadata)
+
+                        # Normalize results to dict
+                        if isinstance(results, dict):
+                            results_dict = results
+                        else:
+                            # Single output - use first output name from model
+                            output_names = self.model.get_output_names()
+                            results_dict = {output_names[0]: results}
 
                         # Submit save task
                         save_futures.append(
                             executor.submit(
-                                self._save_outputs, mask, image, overlay_path, mask_path
+                                self._save_outputs,
+                                results_dict,
+                                image,
+                                img_path,
+                                output_folders,
+                                create_overlays,
                             )
                         )
 
@@ -269,7 +313,9 @@ class InferenceEngine:
             "time": total_time,
         }
 
-    def _load_and_preprocess(self, image_path: Path) -> tuple[np.ndarray, torch.Tensor, dict]:
+    def _load_and_preprocess(
+        self, image_path: Path
+    ) -> tuple[np.ndarray, torch.Tensor, dict]:
         """Load and preprocess image using OpenCV"""
         # Load image with OpenCV (BGR format)
         image = cv2.imread(str(image_path), cv2.IMREAD_COLOR)
@@ -283,17 +329,30 @@ class InferenceEngine:
         return image, img_tensor, metadata
 
     def _save_outputs(
-        self, mask: np.ndarray, original_image: np.ndarray, overlay_path: Path, mask_path: Path
+        self,
+        outputs: dict[str, np.ndarray],
+        original_image: np.ndarray,
+        img_path: Path,
+        output_folders: dict[str, Path],
+        create_overlays: bool,
     ):
-        """Save overlay and mask using OpenCV"""
-        # Create RGBA overlay
-        overlay = self._create_overlay(original_image, mask)
+        """Save all outputs to their respective folders"""
 
-        # Save with OpenCV (fast PNG compression)
-        cv2.imwrite(str(overlay_path), overlay, [cv2.IMWRITE_PNG_COMPRESSION, 1])
+        for output_name, output_array in outputs.items():
+            if output_name not in output_folders:
+                continue
 
-        # Save pure mask
-        cv2.imwrite(str(mask_path), mask, [cv2.IMWRITE_PNG_COMPRESSION, 1])
+            folder = output_folders[output_name]
+            output_path = folder / (img_path.name + ".png")
+
+            # Save output
+            cv2.imwrite(str(output_path), output_array, [cv2.IMWRITE_PNG_COMPRESSION, 1])
+
+        # Create overlay if requested and mask output exists
+        if create_overlays and "overlay" in output_folders and "mask" in outputs:
+            overlay = self._create_overlay(original_image, outputs["mask"])
+            overlay_path = output_folders["overlay"] / (img_path.stem + ".png")
+            cv2.imwrite(str(overlay_path), overlay, [cv2.IMWRITE_PNG_COMPRESSION, 1])
 
     @staticmethod
     def _create_overlay(original_image: np.ndarray, mask: np.ndarray) -> np.ndarray:
@@ -312,7 +371,7 @@ class InferenceEngine:
             mask = cv2.resize(
                 mask,
                 (original_image.shape[1], original_image.shape[0]),
-                interpolation=cv2.INTER_LANCZOS4
+                interpolation=cv2.INTER_LANCZOS4,
             )
 
         # Ensure mask is single channel

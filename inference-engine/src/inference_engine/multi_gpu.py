@@ -46,21 +46,24 @@ class MultiGPUInferenceEngine:
             logger.info(f"Loading model on {device}")
             self.models[device] = model_factory(device)
 
-        # Work queue for distributing images across GPUs
-        self.work_queue: Queue = Queue()
-        self.result_queue: Queue = Queue()
-
-    def _worker(self, device: torch.device, worker_id: int):
+    def _worker(
+        self,
+        device: torch.device,
+        worker_id: int,
+        work_queue: Queue,
+        result_queue: Queue,
+        use_tta: bool,
+    ):
         """Worker thread that processes images on a specific GPU"""
         model = self.models[device]
 
         while True:
-            item = self.work_queue.get()
+            item = work_queue.get()
             if item is None:  # Sentinel to stop worker
-                self.work_queue.task_done()
+                work_queue.task_done()
                 break
 
-            img_path, image, img_tensor, metadata, use_tta = item
+            img_path, image, img_tensor, metadata = item
 
             try:
                 # Move tensor to this GPU
@@ -100,14 +103,14 @@ class MultiGPUInferenceEngine:
                     results_dict = {output_names[0]: results}
 
                 # Put result in queue
-                self.result_queue.put((img_path, image, results_dict, None))
+                result_queue.put((img_path, image, results_dict, None))
 
             except Exception as e:
                 logger.error(f"GPU {device} error processing {img_path.name}: {e}")
-                self.result_queue.put((img_path, image, None, str(e)))
+                result_queue.put((img_path, image, None, str(e)))
 
             finally:
-                self.work_queue.task_done()
+                work_queue.task_done()
 
     def process_images(
         self,
@@ -124,34 +127,44 @@ class MultiGPUInferenceEngine:
         Returns:
             List of (img_path, image, results_dict, error) tuples
         """
+        if not image_data:
+            return []
+
+        # Create fresh queues for this batch
+        work_queue = Queue()
+        result_queue = Queue()
+
+        # Add all images to work queue
+        for img_path, image, img_tensor, metadata in image_data:
+            work_queue.put((img_path, image, img_tensor, metadata))
+
+        # Add sentinel values to stop workers (one per GPU)
+        for _ in self.devices:
+            work_queue.put(None)
+
         # Start worker threads
         workers = []
         for i, device in enumerate(self.devices):
             worker = threading.Thread(
-                target=self._worker, args=(device, i), daemon=True
+                target=self._worker,
+                args=(device, i, work_queue, result_queue, use_tta),
+                daemon=True,
             )
             worker.start()
             workers.append(worker)
 
-        # Add all images to work queue
-        for img_path, image, img_tensor, metadata in image_data:
-            self.work_queue.put((img_path, image, img_tensor, metadata, use_tta))
-
-        # Add sentinel values to stop workers
-        for _ in self.devices:
-            self.work_queue.put(None)
-
         # Wait for all work to complete
-        self.work_queue.join()
+        work_queue.join()
 
-        # Collect results
+        # Collect exact number of results (one per input image)
+        num_images = len(image_data)
         results = []
-        while not self.result_queue.empty():
-            results.append(self.result_queue.get())
+        for _ in range(num_images):
+            results.append(result_queue.get())
 
         # Wait for workers to finish
         for worker in workers:
-            worker.join()
+            worker.join(timeout=1.0)
 
         return results
 

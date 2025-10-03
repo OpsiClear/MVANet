@@ -64,28 +64,31 @@ class InferenceEngine:
         self.use_fp16 = use_fp16
         self.chunk_size = chunk_size
 
-        # Multi-GPU mode
-        if devices and len(devices) > 1:
-            if not model_factory:
-                raise ValueError("model_factory required for multi-GPU mode")
-            self.multi_gpu = True
+        # Multi-GPU mode (or devices + model_factory mode)
+        if devices and model_factory:
+            self.multi_gpu = len(devices) > 1
             self.devices = devices
             self.device = devices[0]  # Primary device for preprocessing
             self.multi_gpu_engine = MultiGPUInferenceEngine(
                 model_factory, devices, use_fp16
             )
             self.model = self.multi_gpu_engine.models[self.device]
-            logger.info(f"Multi-GPU mode: Using {len(devices)} GPUs")
+            if self.multi_gpu:
+                logger.info(f"Multi-GPU mode: Using {len(devices)} GPUs")
+            else:
+                logger.info(f"Multi-GPU engine with 1 GPU: {devices[0]}")
         # Single GPU mode
-        else:
-            if not model or not device:
-                raise ValueError("model and device required for single GPU mode")
+        elif model and device:
             self.multi_gpu = False
             self.model = model
             self.device = device
             self.devices = [device]
             self.multi_gpu_engine = None
             logger.info(f"Single GPU mode: Using {device}")
+        else:
+            raise ValueError(
+                "Either provide (devices + model_factory) or (model + device)"
+            )
 
     def infer_image(
         self, image: np.ndarray, use_tta: bool = False

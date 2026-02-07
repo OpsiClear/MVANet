@@ -121,11 +121,11 @@ async function checkSystemStatus() {
         if (status.is_processing && !isProcessing) {
             // Found a running task that we didn't know about (probably from before page refresh)
             isProcessing = true;
-            currentTaskId = status.current_task_id;
-            
+            currentTaskId = status.current_request_id;
+
             addConsoleMessage('='.repeat(50), 'info');
             addConsoleMessage('Detected running task from previous session', 'warning');
-            addConsoleMessage(`Task ID: ${status.current_task_id}`, 'info');
+            addConsoleMessage(`Request ID: ${status.current_request_id}`, 'info');
             addConsoleMessage(`Processing: ${status.current_input_folder || 'Unknown folder'}`, 'info');
             addConsoleMessage('Fetching processing logs...', 'info');
             
@@ -138,7 +138,7 @@ async function checkSystemStatus() {
             updateUIForProcessing(true);
             
             // Start monitoring the task
-            startTaskMonitoring(status.current_task_id);
+            startTaskMonitoring(status.current_request_id);
             
         } else if (!status.is_processing && isProcessing) {
             // Task completed

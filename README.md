@@ -1,127 +1,177 @@
-# MVANet Image Segmentation
+# OC Masker - Image Segmentation Suite
 
-A modern web application for image segmentation using the MVANet deep learning model. Features a beautiful web dashboard and FastAPI-based backend for batch processing of images with real-time progress monitoring.
+A modular image segmentation application with a plugin architecture. Features a high-performance inference engine with multi-GPU support, multiple segmentation models, and a web-based monitoring dashboard.
 
 ## Features
 
-### Web Dashboard
-- **Modern UI**: Clean, responsive interface with real-time updates
-- **Job Submission**: Easy folder path input for batch image processing
-- **Test-Time Augmentation**: Toggle TTA for improved segmentation accuracy
-- **Real-time Console**: Live processing logs with timestamps and color-coded messages
-- **Latest Image Viewer**: Preview the most recently processed image with overlays
-- **Task Persistence**: Processing continues across page refreshes - monitor from anywhere
+- **Plugin Architecture**: Models auto-register via Python entry points
+- **Multi-GPU Support**: Linear scaling with persistent worker architecture
+- **High Performance**: Image-level pipelining for optimal throughput
+- **Web Dashboard**: Real-time monitoring with live console logs
+- **CLI Tools**: Comprehensive command-line interface
+- **Multiple Models**: MVANet and PDFNet segmentation models
 
-### Processing Capabilities
-- **Recursive Folder Processing**: Automatically finds and processes all 'images' folders
-- **Dual Output**: Generates both segmentation masks and overlays
-- **GPU Acceleration**: Supports CUDA for fast processing
-- **Background Processing**: Non-blocking job execution with task tracking
-- **Error Handling**: Comprehensive logging and error reporting
+## Quick Start
 
-### API Endpoints
-- Task submission and status tracking
-- Real-time log streaming
-- System status monitoring
-- Image serving and retrieval
-
-## Installation
-
-1. Clone the repository:
-   ```bash
-   git clone https://github.com/OpsiClear/MVANet.git
-   cd MVANet
-   ```
-
-2. Install dependencies using `uv` (recommended) or `pip`:
-   ```bash
-   # Using uv (faster)
-   uv sync
-   
-   # Or using pip
-   pip install -r requirements.txt
-   ```
-
-3. Ensure the model files are in the `models/` directory:
-   - `models/MVANet.pth` - Main segmentation model
-   - `models/swin_base_patch4_window12_384_22kto1k.pth` - Backbone model
-
-## Usage
-
-### Starting the Application
-
-Run the FastAPI server directly:
+### Installation
 
 ```bash
-python api_app.py
+# Clone the repository
+git clone https://github.com/OpsiClear/MVANet.git
+cd MVANet
+
+# Install dependencies using uv
+uv sync
 ```
 
-The application will start on `http://localhost:8001` by default.
+### CLI Usage
 
-### Web Interface
-
-1. Open your browser and navigate to `http://localhost:8001`
-2. Enter the full path to your input folder (must contain folders named 'images')
-3. Toggle Test-Time Augmentation if desired (improves accuracy but slower)
-4. Click "Submit Job" to start processing
-5. Monitor progress in real-time via the console output
-6. View the latest processed image using the "Latest Image" button
-
-**Input Folder Structure:**
-```
-your-input-folder/
-├── images/           # Must be named 'images'
-│   ├── image1.jpg
-│   ├── image2.png
-│   └── ...
-```
-
-**Output Structure:**
-```
-your-input-folder_overlay/  # Segmentation overlays
-your-input-folder_masks/    # Binary masks
-```
-
-### API Endpoints
-
-#### Submit Processing Job
 ```bash
-curl -X POST "http://localhost:8001/api/process" \
-    -H "Content-Type: application/json" \
-    -d '{
-        "input_folder": "/path/to/folder",
-        "use_tta": true
-    }'
+# List available models
+uv run oc-masker list
+
+# Show model info
+uv run oc-masker info --model mvanet
+
+# Run inference on a folder
+uv run oc-masker infer --model mvanet --input-folder /path/to/images --device cuda:0
+
+# Multi-GPU inference
+uv run oc-masker infer --model mvanet --input-folder /path/to/images --device cuda:0,cuda:1
+
+# Recursive processing (finds all images/ folders)
+uv run oc-masker infer --model mvanet --input-folder /path/to/root --recursive
+
+# With test-time augmentation
+uv run oc-masker infer --model mvanet --input-folder /path/to/images --tta-merge-mode mean
 ```
 
-#### Check Task Status
+### Web Application
+
 ```bash
-curl "http://localhost:8001/api/status/{request_id}"
+# Start the web server
+uv run api_app.py
+
+# Access at http://localhost:8001
 ```
 
-#### Get System Status
+## Package Structure
+
+```
+MVANet/
+  oc_masker/                 # Core inference engine package
+    src/oc_masker/
+      base.py               # SegmentationModel abstract base class
+      engine.py             # InferenceEngine - folder/recursive processing
+      multi_gpu.py          # MultiGPUInferenceEngine - persistent worker pools
+      registry.py           # Plugin discovery via Python entry points
+      cli.py                # CLI commands (list, info, infer)
+      monitor.py            # Folder monitoring for auto-processing
+      app/                  # FastAPI web application
+    tests/                  # Engine tests
+    README.md               # Full engine documentation
+
+  oc_masker_mvanet/         # MVANet model plugin
+    src/oc_masker_mvanet/
+      model.py              # MVANetModel(SegmentationModel)
+      models/               # Network architecture
+    checkpoints/            # Bundled model weights (Git LFS)
+    tests/                  # Model tests
+    README.md               # Model documentation
+
+  oc_masker_pdfnet/         # PDFNet model plugin
+    src/oc_masker_pdfnet/
+      model.py              # PDFNetModel(SegmentationModel)
+      models/               # Network architecture
+    checkpoints/            # Model weights (auto-downloaded)
+    tests/                  # Model tests
+    README.md               # Model documentation
+
+  scripts/                   # Utility scripts
+    profile_full_pipeline.py
+    profile_pdfnet_pipeline.py
+    restore_scan_complete.py
+
+  api_app.py                 # Development entry point for web app
+  pyproject.toml             # Root project configuration
+```
+
+## Available Models
+
+### MVANet
+
+Multi-View Aggregation Network for image segmentation. Includes bundled model weights.
+
 ```bash
-curl "http://localhost:8001/api/system/status"
+uv run oc-masker infer --model mvanet --input-folder /path/to/images
 ```
 
-#### Get Task Logs
+See [oc_masker_mvanet/README.md](oc_masker_mvanet/README.md) for full documentation.
+
+### PDFNet
+
+Patch-Depth Fusion Network with MoGe depth estimation. Produces masks, depth maps, and normal maps.
+
 ```bash
-curl "http://localhost:8001/api/logs/{task_id}"
+uv run oc-masker infer --model pdfnet --input-folder /path/to/images
 ```
 
-#### Get Latest Processed Image
+See [oc_masker_pdfnet/README.md](oc_masker_pdfnet/README.md) for full documentation.
+
+## Input/Output Structure
+
+**Input folder structure:**
+```
+your-folder/
+  images/           # Must be named 'images'
+    subfolder/      # Supports nested structure
+      image.jpg
+```
+
+**Output structure (created as siblings to images/):**
+```
+your-folder/
+  masks/            # Binary masks (filename: {name}.png)
+  overlays/         # RGBA overlays with transparency
+  depths/           # Depth maps (if model supports)
+  normals/          # Normal maps (if model supports)
+  .mask_complete    # Flag when done
+```
+
+## API Endpoints
+
+| Endpoint | Description |
+|----------|-------------|
+| `POST /api/process` | Submit processing job |
+| `GET /api/status/{request_id}` | Check task status |
+| `GET /api/logs/{task_id}` | Get task-specific logs |
+| `GET /api/models` | List available models |
+| `GET /api/gpus` | List detected GPU devices |
+| `GET /api/latest-image` | Get most recently processed image |
+
+## Running Tests
+
 ```bash
-curl "http://localhost:8001/api/latest-image"
+# Run all tests
+uv run pytest
+
+# Run engine tests
+uv run pytest oc_masker/tests/ -v
+
+# Run PDFNet tests
+uv run pytest oc_masker_pdfnet/tests/ -v
 ```
 
-## Technology Stack
+## Creating a New Model Plugin
 
-- **Backend**: FastAPI with async/await support
-- **Frontend**: Bootstrap 5 with vanilla JavaScript
-- **Deep Learning**: PyTorch with MVANet architecture
-- **Model Backbone**: Swin Transformer
-- **Image Processing**: PIL/Pillow, NumPy
+See [oc_masker/README.md](oc_masker/README.md) for the plugin development guide.
+
+## Requirements
+
+- Python 3.12+
+- PyTorch with CUDA support
+- CUDA-capable GPU with 8GB+ VRAM
 
 ## License
 
-[MIT License](LICENSE) 
+MIT License

@@ -1,27 +1,34 @@
+"""FastAPI web application for image segmentation.
+
+Provides REST API and web UI for running inference with oc_masker models.
+"""
+
+import logging
+import threading
+import time
 import uuid
+from collections import deque
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
-import torch
-import logging
-import os
-import threading
 from concurrent.futures import ThreadPoolExecutor
-from collections import deque
-import time
 
+import torch
 from fastapi import FastAPI, HTTPException, status
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-from src.inference import (
-    load_model,
-    process_folder_recursive,
-    find_images_folders_recursive,
-    get_output_paths_for_images_folder,
+from oc_masker import (
+    InferenceEngine,
+    create_model,
+    list_models,
+    get_model_info,
+    detect_gpus,
+    parse_devices,
 )
+from oc_masker.engine import SUPPORTED_FORMATS
 
 
 # Configure logging to capture to memory
@@ -100,28 +107,45 @@ class RequestStatus(str, Enum):
 
 class ProcessRequest(BaseModel):
     input_folder: str
-    use_tta: bool = True
+    model: str = "mvanet"  # Model selection
+    devices: str = "auto"  # GPU devices: "auto", "cuda:0", "cuda:0,cuda:1", etc.
+    tta_merge_mode: str = "none"  # TTA merge strategy: "none", "mean", "max", "gmean"
+    force_overwrite: bool = False
+    output_folder_postfix: str = ""  # e.g., "_v2" -> "masks_v2"
+    # Model-specific options (passed to model constructor)
+    image_size: tuple[int, int] | None = None  # e.g., (1024, 1024)
+    use_fp16: bool = True
 
 
 class ProcessResponse(BaseModel):
     request_id: str
     status: RequestStatus
     output_folder: str | None = None
+    output_folders: dict[str, str] | None = None  # Map of output types to folders
+    output_types: list[str] | None = None  # e.g., ["mask", "depth", "normal"]
     error_message: str | None = None
     input_folder: str | None = None
-    use_tta: bool | None = None
+    tta_merge_mode: str | None = None  # TTA merge strategy
+    model: str | None = None
+    devices: str | None = None  # GPU devices used
+    model_metadata: dict | None = None
+    force_overwrite: bool | None = None
+    output_folder_postfix: str | None = None
+    stats: dict | None = None  # Processing statistics
 
 
 class SystemStatus(BaseModel):
+    """Current system processing status."""
+
     is_processing: bool
-    current_task_id: str | None = None
+    current_request_id: str | None = None
     current_input_folder: str | None = None
 
 
 # Global state
 tasks: dict[str, ProcessResponse] = {}
-model = None
-device = torch.device(os.environ.get("SELECTED_DEVICE", "cuda:0"))
+engines: dict[str, InferenceEngine] = {}  # Cache engines per model
+available_gpus: list[dict] = []  # Detected GPUs at startup
 
 # Processing state tracking
 processing_lock = threading.Lock()
@@ -132,16 +156,46 @@ current_input_folder: str | None = None
 executor = ThreadPoolExecutor(max_workers=1)
 
 
-def load_model_once():
-    """Load model once on first use"""
-    global model
-    if model is None:
-        model_path = Path("models/MVANet.pth")
-        if not model_path.exists():
-            raise FileNotFoundError(f"Model file not found: {model_path}")
-        logger.info(f"Loading model from {model_path}")
-        model = load_model(device, model_path)
-        logger.info(f"Model loaded successfully on {device}")
+def get_or_create_engine(
+    model_name: str,
+    devices_spec: str = "auto",
+    image_size: tuple[int, int] | None = None,
+    use_fp16: bool = True,
+) -> InferenceEngine:
+    """Get or create inference engine for specified model with configuration"""
+    global engines
+
+    # Parse device specification
+    devices = parse_devices(devices_spec)
+    devices_str = ",".join(str(d) for d in devices)
+
+    # Create cache key based on model name and configuration
+    image_size_str = f"{image_size[0]}x{image_size[1]}" if image_size else "default"
+    cache_key = f"{model_name}_{devices_str}_{image_size_str}_fp16_{use_fp16}"
+
+    if cache_key not in engines:
+        logger.info(f"Creating inference engine for model: {model_name} on devices: {devices_str}")
+
+        # Model factory using bundled weights with specified options
+        def model_factory(dev):
+            model_kwargs = {}
+            if image_size is not None:
+                model_kwargs["image_size"] = image_size
+            model_kwargs["use_fp16"] = use_fp16
+
+            m = create_model(model_name, **model_kwargs)
+            m.load(None, dev)  # None = use bundled weights
+            m.optimize_for_inference(dev)
+            return m
+
+        engines[cache_key] = InferenceEngine(
+            devices=devices,
+            model_factory=model_factory,
+            use_fp16=use_fp16,
+        )
+        logger.info(f"Inference engine for {model_name} loaded successfully on {len(devices)} device(s)")
+
+    return engines[cache_key]
 
 
 def log_with_task_id(message: str, level: str = "INFO", task_id: str = None):
@@ -160,7 +214,17 @@ def log_with_task_id(message: str, level: str = "INFO", task_id: str = None):
     memory_handler.emit(log_record)
 
 
-def background_process_task(request_id: str, input_folder_str: str, use_tta: bool):
+def background_process_task(
+    request_id: str,
+    input_folder_str: str,
+    model_name: str,
+    devices_spec: str = "auto",
+    tta_merge_mode: str = "none",
+    force_overwrite: bool = False,
+    output_folder_postfix: str = "",
+    image_size: tuple[int, int] | None = None,
+    use_fp16: bool = True,
+):
     """Background task for processing images"""
     global current_processing_task, current_input_folder
 
@@ -174,92 +238,114 @@ def background_process_task(request_id: str, input_folder_str: str, use_tta: boo
             current_processing_task = request_id
             current_input_folder = input_folder_str
 
-        # Load model if needed
-        log_with_task_id("Loading model...", "INFO", request_id)
-        load_model_once()
-        log_with_task_id("Model loaded successfully", "INFO", request_id)
+        # Get model metadata
+        try:
+            model_metadata = get_model_info(model_name)
+            log_with_task_id(f"Model: {model_metadata.get('name', model_name)}", "INFO", request_id)
+        except Exception as e:
+            log_with_task_id(f"Warning: Could not get model metadata: {e}", "WARNING", request_id)
+            model_metadata = {}
 
-        # Process folder - find images folders and determine output paths
+        # Parse and log devices
+        devices = parse_devices(devices_spec)
+        devices_str = ", ".join(str(d) for d in devices)
+        log_with_task_id(f"Using {len(devices)} device(s): {devices_str}", "INFO", request_id)
+
+        # Get or create engine for specified model
+        log_with_task_id(f"Loading inference engine for model: {model_name}...", "INFO", request_id)
+        engine = get_or_create_engine(
+            model_name=model_name,
+            devices_spec=devices_spec,
+            image_size=image_size,
+            use_fp16=use_fp16,
+        )
+        log_with_task_id(f"Inference engine for {model_name} loaded successfully", "INFO", request_id)
+
+        # Get output types from model
+        output_types = engine.model.get_output_names()
+        log_with_task_id(f"Model outputs: {', '.join(output_types)}", "INFO", request_id)
+
+        # Process folder recursively
         input_folder = Path(input_folder_str)
 
-        # Import the new helper functions
-        from src.inference import (
-            find_images_folders_recursive,
-            get_output_paths_for_images_folder,
-        )
-
-        # Find images folders
-        images_folders = find_images_folders_recursive(input_folder)
-
-        if not images_folders:
-            # Raise error if no 'images' folders found
-            raise ValueError(f"No folders named 'images' found under {input_folder}")
-
-        # Use the first images folder found for output path determination
-        first_images_folder = images_folders[0]
-        overlay_output_folder, masks_output_folder = get_output_paths_for_images_folder(
-            first_images_folder
+        log_with_task_id(
+            f"Starting recursive processing for: {input_folder}", "INFO", request_id
         )
         log_with_task_id(
-            f"Found {len(images_folders)} 'images' folders", "INFO", request_id
-        )
-
-        # Update task with output folder path immediately
-        if request_id in tasks:
-            tasks[request_id].output_folder = str(overlay_output_folder)
-
-        log_with_task_id(
-            f"Starting image processing for folder: {input_folder}", "INFO", request_id
-        )
-        log_with_task_id(
-            f"Overlays will be saved to: {overlay_output_folder}", "INFO", request_id
-        )
-        log_with_task_id(
-            f"Masks will be saved to: {masks_output_folder}", "INFO", request_id
-        )
-        log_with_task_id(
-            f"Test-Time Augmentation: {'Enabled' if use_tta else 'Disabled'}",
+            f"TTA Merge Mode: {tta_merge_mode}",
             "INFO",
             request_id,
         )
+        log_with_task_id(
+            f"Force Overwrite: {'Enabled' if force_overwrite else 'Disabled'}",
+            "INFO",
+            request_id,
+        )
+        if output_folder_postfix:
+            log_with_task_id(f"Output Folder Postfix: {output_folder_postfix}", "INFO", request_id)
 
-        # Patch the logging in inference module
-        import src.inference as inference_module
+        # Determine output folders for status update
+        output_folders_dict = {}
+        output_folder = None  # Primary output folder for compatibility
 
-        original_logging = inference_module.logging
+        if (input_folder / "images").exists():
+            # Direct images folder - build output paths
+            parent = input_folder
+            for output_type in output_types:
+                folder_name = f"{output_type}s{output_folder_postfix}"
+                output_folders_dict[output_type] = str(parent / folder_name)
+            output_folder = output_folders_dict.get("mask")
+        else:
+            # Search for first images folder
+            for p in input_folder.rglob("images"):
+                if p.is_dir():
+                    parent = p.parent
+                    for output_type in output_types:
+                        folder_name = f"{output_type}s{output_folder_postfix}"
+                        output_folders_dict[output_type] = str(parent / folder_name)
+                    output_folder = output_folders_dict.get("mask")
+                    break
 
-        class TaskLoggingModule:
-            def info(self, msg):
-                log_with_task_id(msg, "INFO", request_id)
+        # Update task with output folder paths
+        if request_id in tasks:
+            tasks[request_id].output_folder = output_folder
+            tasks[request_id].output_folders = output_folders_dict
+            tasks[request_id].output_types = output_types
+            tasks[request_id].model_metadata = model_metadata
+            if output_folders_dict:
+                log_with_task_id(f"Outputs will be saved to:", "INFO", request_id)
+                for output_type, folder_path in output_folders_dict.items():
+                    log_with_task_id(f"  - {output_type}: {folder_path}", "INFO", request_id)
 
-            def warning(self, msg):
-                log_with_task_id(msg, "WARNING", request_id)
+        # Process using engine
+        result = engine.process_dataset_recursive(
+            root_path=input_folder,
+            tta_merge_mode=tta_merge_mode,
+            output_folder_postfix=output_folder_postfix,
+            force_overwrite=force_overwrite,
+        )
 
-            def error(self, msg):
-                log_with_task_id(msg, "ERROR", request_id)
-
-        inference_module.logging = TaskLoggingModule()
-
-        try:
-            process_folder_recursive(
-                input_folder,
-                model,
-                device,
-                use_tta=use_tta,
-            )
-        finally:
-            # Restore original logging
-            inference_module.logging = original_logging
-
-        log_with_task_id("Processing completed successfully!", "INFO", request_id)
+        log_with_task_id(
+            f"Processing completed! Processed {result['processed']} images in {result['time']:.1f}s",
+            "INFO",
+            request_id,
+        )
 
         # Update task as completed
         tasks[request_id] = ProcessResponse(
             request_id=request_id,
             status=RequestStatus.COMPLETED,
-            output_folder=str(overlay_output_folder),
+            output_folder=output_folder or "Multiple folders processed",
+            output_folders=output_folders_dict,
+            output_types=output_types,
             input_folder=input_folder_str,
-            use_tta=use_tta,
+            tta_merge_mode=tta_merge_mode,
+            model=model_name,
+            devices=devices_spec,
+            model_metadata=model_metadata,
+            force_overwrite=force_overwrite,
+            output_folder_postfix=output_folder_postfix,
+            stats=result,
         )
 
         log_with_task_id(
@@ -275,7 +361,11 @@ def background_process_task(request_id: str, input_folder_str: str, use_tta: boo
             status=RequestStatus.FAILED,
             error_message=str(e),
             input_folder=input_folder_str,
-            use_tta=use_tta,
+            tta_merge_mode=tta_merge_mode,
+            model=model_name,
+            devices=devices_spec,
+            force_overwrite=force_overwrite,
+            output_folder_postfix=output_folder_postfix,
         )
 
     finally:
@@ -295,25 +385,78 @@ def background_process_task(request_id: str, input_folder_str: str, use_tta: boo
 
 @app.get("/api/system/status", response_model=SystemStatus)
 async def get_system_status() -> SystemStatus:
-    """Get current system processing status"""
+    """Get current system processing status.
+
+    Returns:
+        SystemStatus with processing state and current task info.
+    """
     with processing_lock:
         return SystemStatus(
             is_processing=current_processing_task is not None,
-            current_task_id=current_processing_task,
+            current_request_id=current_processing_task,
             current_input_folder=current_input_folder,
         )
 
 
-@app.get("/api/logs/{task_id}")
-async def get_task_logs(task_id: str, since: str = None):
-    """Get logs for a specific task"""
+@app.get("/api/models")
+async def get_available_models():
+    """List all available model plugins."""
     try:
-        logs = memory_handler.get_task_logs(task_id, since)
-        return {"task_id": task_id, "logs": logs, "total_logs": len(logs)}
+        models = list_models()
+        return {"models": models, "total": len(models)}
     except Exception as e:
-        logger.error(f"Error fetching logs for task {task_id}: {e}")
-        return JSONResponse(
-            status_code=500, content={"detail": f"Error fetching logs: {str(e)}"}
+        logger.error(f"Error listing models: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error listing models: {str(e)}",
+        )
+
+
+@app.get("/api/models/{model_name}")
+async def get_model_metadata(model_name: str):
+    """Get metadata for a specific model."""
+    try:
+        metadata = get_model_info(model_name)
+        return metadata
+    except KeyError as e:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Model '{model_name}' not found. {str(e)}",
+        )
+    except Exception as e:
+        logger.error(f"Error getting model info: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error getting model info: {str(e)}",
+        )
+
+
+@app.get("/api/gpus")
+async def get_available_gpus():
+    """Get list of available GPU devices.
+
+    Returns:
+        Dictionary with list of GPU info and total count.
+    """
+    return {"gpus": available_gpus, "total": len(available_gpus)}
+
+
+@app.get("/api/logs/{request_id}")
+async def get_task_logs(request_id: str, since: str | None = None):
+    """Get logs for a specific task.
+
+    Args:
+        request_id: The task/request ID to get logs for.
+        since: Optional ISO timestamp to filter logs after this time.
+    """
+    try:
+        logs = memory_handler.get_task_logs(request_id, since)
+        return {"request_id": request_id, "logs": logs, "total_logs": len(logs)}
+    except Exception as e:
+        logger.error(f"Error fetching logs for task {request_id}: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error fetching logs: {str(e)}",
         )
 
 
@@ -341,12 +484,25 @@ async def process_folder(request: ProcessRequest) -> ProcessResponse:
             request_id=request_id,
             status=RequestStatus.PROCESSING,
             input_folder=request.input_folder,
-            use_tta=request.use_tta,
+            tta_merge_mode=request.tta_merge_mode,
+            model=request.model,
+            devices=request.devices,
+            force_overwrite=request.force_overwrite,
+            output_folder_postfix=request.output_folder_postfix,
         )
 
-        # Submit background task
+        # Submit background task with all options
         executor.submit(
-            background_process_task, request_id, request.input_folder, request.use_tta
+            background_process_task,
+            request_id=request_id,
+            input_folder_str=request.input_folder,
+            model_name=request.model,
+            devices_spec=request.devices,
+            tta_merge_mode=request.tta_merge_mode,
+            force_overwrite=request.force_overwrite,
+            output_folder_postfix=request.output_folder_postfix,
+            image_size=request.image_size,
+            use_fp16=request.use_fp16,
         )
 
         logger.info(f"Task {request_id} submitted for background processing")
@@ -359,7 +515,11 @@ async def process_folder(request: ProcessRequest) -> ProcessResponse:
             status=RequestStatus.FAILED,
             error_message=str(e),
             input_folder=request.input_folder,
-            use_tta=request.use_tta,
+            tta_merge_mode=request.tta_merge_mode,
+            model=request.model,
+            devices=request.devices,
+            force_overwrite=request.force_overwrite,
+            output_folder_postfix=request.output_folder_postfix,
         )
         return tasks[request_id]
 
@@ -376,14 +536,19 @@ async def get_status(request_id: str) -> ProcessResponse:
 
 
 def find_images_in_folder(folder_path: Path) -> list[Path]:
-    """Find all image files in a folder with supported extensions"""
+    """Find all image files in a folder with supported extensions.
+
+    Args:
+        folder_path: Directory to search for images.
+
+    Returns:
+        List of paths to found image files.
+    """
     if not folder_path.exists():
         return []
 
-    image_extensions = {".png", ".jpg", ".jpeg", ".gif", ".bmp"}
     images = []
-
-    for ext in image_extensions:
+    for ext in SUPPORTED_FORMATS:
         images.extend(folder_path.glob(f"*{ext}"))
         images.extend(folder_path.glob(f"*{ext.upper()}"))
         images.extend(folder_path.glob(f"**/*{ext}"))
@@ -393,18 +558,23 @@ def find_images_in_folder(folder_path: Path) -> list[Path]:
 
 
 def get_current_processing_output_folder() -> Path | None:
-    """Get the output folder for the currently processing task"""
+    """Get the output folder for the currently processing task."""
     global current_input_folder
     if not current_input_folder:
         return None
 
     try:
         input_path = Path(current_input_folder)
-        images_folders = find_images_folders_recursive(input_path)
-        if images_folders:
-            first_images_folder = images_folders[0]
-            overlay_output, _ = get_output_paths_for_images_folder(first_images_folder)
-            return overlay_output
+
+        # Check if input_path has an 'images' subfolder
+        if (input_path / "images").is_dir():
+            return input_path / "masks"
+
+        # Search for first 'images' folder recursively
+        for p in input_path.rglob("images"):
+            if p.is_dir():
+                return p.parent / "masks"
+
     except Exception as e:
         logger.error(f"Error getting current processing output folder: {e}")
 
@@ -414,19 +584,30 @@ def get_current_processing_output_folder() -> Path | None:
 def create_image_response(
     image_path: Path,
     output_folder: Path,
-    task_id: str,
+    request_id: str,
     input_folder: str | None = None,
     task_status: str = "completed",
 ) -> dict:
-    """Create a standardized image response"""
+    """Create a standardized image response.
+
+    Args:
+        image_path: Path to the image file.
+        output_folder: Path to the output folder containing the image.
+        request_id: The task/request ID or 'current_processing'.
+        input_folder: Original input folder path.
+        task_status: Current task status.
+
+    Returns:
+        Dictionary with image metadata and URL.
+    """
     return {
-        "task_id": task_id,
+        "request_id": request_id,
         "input_folder": input_folder,
         "output_folder": str(output_folder),
         "image_name": image_path.name,
         "image_path": str(image_path.relative_to(output_folder)),
-        "image_url": f"/api/images/{task_id}/{image_path.name}"
-        if task_id != "current_processing"
+        "image_url": f"/api/images/{request_id}/{image_path.name}"
+        if request_id != "current_processing"
         else f"/api/file/current_processing/{image_path.name}",
         "modified_time": image_path.stat().st_mtime,
         "task_status": task_status,
@@ -435,16 +616,18 @@ def create_image_response(
 
 @app.get("/api/latest-image")
 async def get_latest_processed_image():
-    """Get the most recently saved processed image from any output folder"""
+    """Get the most recently saved processed image from any output folder."""
     try:
         all_candidate_images = []
 
         # 1. Check completed/failed tasks with output folders
         tasks_with_output = [
-            (task_id, task) for task_id, task in tasks.items() if task.output_folder
+            (request_id, task)
+            for request_id, task in tasks.items()
+            if task.output_folder
         ]
 
-        for task_id, task in tasks_with_output:
+        for request_id, task in tasks_with_output:
             output_folder = Path(task.output_folder)
             images = find_images_in_folder(output_folder)
 
@@ -452,7 +635,7 @@ async def get_latest_processed_image():
                 all_candidate_images.append(
                     {
                         "path": img_path,
-                        "task_id": task_id,
+                        "request_id": request_id,
                         "task": task,
                         "output_folder": output_folder,
                         "mtime": img_path.stat().st_mtime,
@@ -461,14 +644,14 @@ async def get_latest_processed_image():
 
         # 2. Check current processing task
         current_output_folder = get_current_processing_output_folder()
-        if current_output_folder:
+        if current_output_folder and current_output_folder.exists():
             images = find_images_in_folder(current_output_folder)
 
             for img_path in images:
                 all_candidate_images.append(
                     {
                         "path": img_path,
-                        "task_id": "current_processing",
+                        "request_id": "current_processing",
                         "task": None,
                         "output_folder": current_output_folder,
                         "mtime": img_path.stat().st_mtime,
@@ -477,14 +660,15 @@ async def get_latest_processed_image():
 
         # 3. Find the most recent image
         if not all_candidate_images:
-            return JSONResponse(
-                status_code=404, content={"detail": "No processed images found"}
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="No processed images found",
             )
 
         latest = max(all_candidate_images, key=lambda x: x["mtime"])
 
         # 4. Create response
-        if latest["task_id"] == "current_processing":
+        if latest["request_id"] == "current_processing":
             return create_image_response(
                 latest["path"],
                 latest["output_folder"],
@@ -496,33 +680,41 @@ async def get_latest_processed_image():
             return create_image_response(
                 latest["path"],
                 latest["output_folder"],
-                latest["task_id"],
+                latest["request_id"],
                 input_folder=latest["task"].input_folder,
                 task_status=latest["task"].status,
             )
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error getting latest image: {str(e)}")
-        return JSONResponse(
-            status_code=500, content={"detail": f"Error getting latest image: {str(e)}"}
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error getting latest image: {str(e)}",
         )
 
 
 @app.get("/api/images/{request_id}/{filename}")
 async def get_image_file(request_id: str, filename: str):
-    """Get a specific image file"""
+    """Get a specific image file from a task's output folder.
+
+    Args:
+        request_id: The task/request ID.
+        filename: Name of the image file to retrieve.
+    """
     if request_id not in tasks:
-        return JSONResponse(
-            status_code=404,
-            content={"detail": f"Task with request_id {request_id} not found"},
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Task {request_id} not found",
         )
 
     task = tasks[request_id]
 
     if not task.output_folder:
-        return JSONResponse(
-            status_code=404,
-            content={"detail": "No output folder for this task"},
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No output folder for this task",
         )
 
     try:
@@ -531,9 +723,9 @@ async def get_image_file(request_id: str, filename: str):
 
         # Security check - ensure the file is within the output folder
         if not str(image_path.resolve()).startswith(str(output_folder.resolve())):
-            return JSONResponse(
-                status_code=403,
-                content={"detail": "Access denied"},
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Access denied",
             )
 
         if not image_path.exists():
@@ -542,53 +734,113 @@ async def get_image_file(request_id: str, filename: str):
                 image_path = found_file
                 break
             else:
-                return JSONResponse(
-                    status_code=404,
-                    content={"detail": f"Image {filename} not found"},
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Image {filename} not found",
                 )
 
         return FileResponse(image_path)
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error serving image: {str(e)}")
-        return JSONResponse(
-            status_code=500, content={"detail": f"Error serving image: {str(e)}"}
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error serving image: {str(e)}",
         )
 
 
-@app.get("/api/file/{task_id}/{filename}")
-async def get_file_from_current_processing(task_id: str, filename: str):
-    """Serve files from current processing output folder"""
+@app.get("/api/file/{request_id}/{filename}")
+async def get_file_from_processing(request_id: str, filename: str):
+    """Serve files from a processing task's output folder.
+
+    Args:
+        request_id: Task ID or 'current_processing' for active task.
+        filename: Name of the file to retrieve.
+    """
     try:
-        if task_id == "current_processing":
-            global current_input_folder
-            if current_input_folder:
-                input_path = Path(current_input_folder)
-                output_folder = input_path.parent / (input_path.name + "_overlay")
-                file_path = output_folder / filename
+        if request_id == "current_processing":
+            output_folder = get_current_processing_output_folder()
+            if not output_folder:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="No active processing task",
+                )
+        elif request_id in tasks:
+            task = tasks[request_id]
+            if not task.output_folder:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="No output folder for this task",
+                )
+            output_folder = Path(task.output_folder)
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Task {request_id} not found",
+            )
 
-                # Security check
-                if not str(file_path.resolve()).startswith(
-                    str(output_folder.resolve())
-                ):
-                    return JSONResponse(
-                        status_code=403, content={"detail": "Access denied"}
-                    )
+        file_path = output_folder / filename
 
-                if file_path.exists():
-                    return FileResponse(file_path)
+        # Security check - ensure file is within output folder
+        if not str(file_path.resolve()).startswith(str(output_folder.resolve())):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Access denied",
+            )
 
-                # Try to find the file recursively
-                for found_file in output_folder.rglob(filename):
-                    return FileResponse(found_file)
+        if file_path.exists():
+            return FileResponse(file_path)
 
-        return JSONResponse(status_code=404, content={"detail": "File not found"})
+        # Try to find the file recursively
+        for found_file in output_folder.rglob(filename):
+            return FileResponse(found_file)
 
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"File {filename} not found",
+        )
+
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error serving file: {str(e)}")
-        return JSONResponse(
-            status_code=500, content={"detail": f"Error serving file: {str(e)}"}
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error serving file: {str(e)}",
         )
+
+
+@app.on_event("startup")
+async def startup_event():
+    """Detect available GPUs on startup"""
+    global available_gpus
+
+    try:
+        devices = detect_gpus()
+        for device in devices:
+            if device.type == "cuda":
+                props = torch.cuda.get_device_properties(device)
+                available_gpus.append({
+                    "id": str(device),
+                    "name": props.name,
+                    "memory_gb": round(props.total_memory / (1024**3), 1),
+                    "compute_capability": f"{props.major}.{props.minor}"
+                })
+            else:
+                available_gpus.append({
+                    "id": str(device),
+                    "name": "CPU",
+                    "memory_gb": 0,
+                    "compute_capability": "N/A"
+                })
+
+        logger.info(f"Detected {len(available_gpus)} device(s): {[g['id'] for g in available_gpus]}")
+    except Exception as e:
+        logger.error(f"Error detecting GPUs: {e}")
+        # Fallback to single CPU device
+        available_gpus = [{"id": "cpu", "name": "CPU", "memory_gb": 0, "compute_capability": "N/A"}]
 
 
 if __name__ == "__main__":
